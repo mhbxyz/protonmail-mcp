@@ -10,7 +10,7 @@ from mcp import Client
 from protonmail_mcp.bridge import BridgeClient
 from protonmail_mcp.config import BridgeConfig
 from protonmail_mcp.confirmations import ConfirmationError, ConfirmationManager
-from protonmail_mcp.models import EmailContent, EmailPage, Folder, FolderStatus
+from protonmail_mcp.models import EmailContent, EmailPage, Folder, FolderStatus, SearchResult
 from protonmail_mcp.policy import Capabilities, Policy
 from protonmail_mcp.server import build_server, set_client
 
@@ -231,8 +231,8 @@ class StrictReadMailbox:
     def get_status(self, folder: str | None = None) -> list[FolderStatus]:
         return [FolderStatus(name="INBOX")]
 
-    def search_emails(self, *args: Any, **kwargs: Any) -> list[Any]:
-        return []
+    def search_emails(self, *args: Any, **kwargs: Any) -> SearchResult:
+        return SearchResult()
 
     def get_message(self, message_id: str, folder: str = "INBOX", max_chars: int = 20000) -> EmailContent:
         return EmailContent(message_id=message_id, folder=folder, uid=1)

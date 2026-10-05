@@ -17,6 +17,11 @@
       "title": "Folder",
       "type": "string"
     },
+    "has_attachment": {
+      "default": false,
+      "title": "Has Attachment",
+      "type": "boolean"
+    },
     "limit": {
       "default": 20,
       "title": "Limit",

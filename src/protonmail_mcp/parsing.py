@@ -9,6 +9,7 @@ from email.message import Message
 from email.policy import default as default_policy
 from email.utils import formataddr, getaddresses
 from html.parser import HTMLParser
+from typing import Any
 
 from .models import Attachment, EmailContent, EmailSummary
 
@@ -320,6 +321,37 @@ def thread_parent_ids(raw_header: bytes) -> list[str]:
 
 def header_message_id(raw_header: bytes) -> str:
     return header_value(message_from_bytes(raw_header, policy=default_policy), "Message-ID")
+
+
+def structure_has_attachment(structure: Any) -> bool:
+    if not isinstance(structure, tuple) or not structure:
+        return False
+    first = structure[0]
+    if isinstance(first, list):
+        return any(structure_has_attachment(part) for part in first)
+    if not isinstance(first, bytes):
+        return False
+    maintype = first.lower()
+    subtype = (
+        structure[1].lower()
+        if len(structure) > 1 and isinstance(structure[1], bytes)
+        else b""
+    )
+    if maintype == b"text" and subtype in (b"plain", b"html"):
+        return _mentions_attachment_extension(structure)
+    return True
+
+
+def _mentions_attachment_extension(value: Any) -> bool:
+    if isinstance(value, (list, tuple)):
+        if (
+            value
+            and isinstance(value[0], bytes)
+            and value[0].lower() in (b"attachment", b"inline", b"filename")
+        ):
+            return True
+        return any(_mentions_attachment_extension(item) for item in value)
+    return False
 
 
 def extract_attachments(message: Message) -> list[Attachment]:

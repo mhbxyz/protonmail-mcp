@@ -17,12 +17,20 @@ from imapclient.exceptions import (
 )
 
 from .config import BridgeConfig
-from .models import EmailContent, EmailPage, EmailSummary, Folder, FolderStatus
+from .models import (
+    EmailContent,
+    EmailPage,
+    EmailSummary,
+    Folder,
+    FolderStatus,
+    SearchResult,
+)
 from .parsing import (
     AttachmentPart,
     attachment_parts,
     full_from_message,
     header_message_id,
+    structure_has_attachment,
     summary_from_header,
     thread_parent_ids,
 )
@@ -32,6 +40,7 @@ T = TypeVar("T")
 _RETRYABLE_ERRORS = (IMAPClientAbortError, ProtocolError, OSError)
 _APPENDUID = re.compile(rb"APPENDUID\s+\d+\s+(\d+)")
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
+ATTACHMENT_SCAN_LIMIT = 200
 
 
 class MailboxError(RuntimeError):
@@ -118,11 +127,43 @@ class BridgeClient:
         since_days: int | None = None,
         before_days: int | None = None,
         unread_only: bool = False,
-    ) -> list[EmailSummary]:
+        has_attachment: bool = False,
+    ) -> SearchResult:
         criteria = self._search_criteria(
             query, unread_only, since_days, before_days, sender, recipient, subject
         )
-        return self._run(lambda client: self._fetch_summaries(client, folder, criteria, limit))
+        if not has_attachment:
+            messages = self._run(
+                lambda client: self._fetch_summaries(client, folder, criteria, limit)
+            )
+            return SearchResult(messages=messages)
+        return self._search_with_attachments(folder, criteria, limit)
+
+    def _search_with_attachments(
+        self,
+        folder: str,
+        criteria: Sequence[Any],
+        limit: int,
+    ) -> SearchResult:
+        def operation(client: IMAPClient) -> SearchResult:
+            client.select_folder(folder, readonly=True)
+            uids = client.search(criteria)
+            truncated = len(uids) > ATTACHMENT_SCAN_LIMIT
+            candidates = uids[:ATTACHMENT_SCAN_LIMIT]
+            if not candidates:
+                return SearchResult(messages=[], scanned=0, truncated=truncated)
+            response = client.fetch(candidates, ["BODYSTRUCTURE"])
+            matches: list[int] = []
+            for uid in candidates:
+                item = response.get(uid) or {}
+                if structure_has_attachment(item.get(b"BODYSTRUCTURE")):
+                    matches.append(uid)
+            messages = self._summaries_for(client, matches[:limit], folder)
+            return SearchResult(
+                messages=messages, scanned=len(candidates), truncated=truncated
+            )
+
+        return self._run(operation)
 
     def get_raw(self, message_id: str, folder: str = "INBOX") -> bytes:
         def operation(client: IMAPClient) -> bytes:

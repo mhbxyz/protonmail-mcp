@@ -19,6 +19,7 @@ from protonmail_mcp.models import (
     EmailSummary,
     Folder,
     FolderStatus,
+    SearchResult,
 )
 from protonmail_mcp.parsing import attachment_parts
 from protonmail_mcp.policy import (
@@ -56,6 +57,7 @@ class FakeMailbox:
         self.thread: list[EmailSummary] = []
         self.attachments: list[Attachment] = []
         self.permanently_deleted: list[tuple[str, str]] = []
+        self.last_search: dict[str, Any] = {}
 
     def list_folders(self) -> list[Folder]:
         return [
@@ -88,8 +90,18 @@ class FakeMailbox:
     def get_status(self, folder: str | None = None) -> list[FolderStatus]:
         return [FolderStatus(name=folder or "INBOX", total=10, unread=3)]
 
-    def search_emails(self, query: str, folder: str = "INBOX", limit: int = 20) -> list[EmailSummary]:
-        return []
+    def search_emails(self, *args: Any, **kwargs: Any) -> SearchResult:
+        self.last_search = kwargs
+        return SearchResult(
+            messages=[
+                EmailSummary(
+                    message_id="<found@example.com>",
+                    folder="INBOX",
+                    uid=2,
+                    subject="Trouve",
+                )
+            ]
+        )
 
     def get_message(self, message_id: str, folder: str = "INBOX", max_chars: int = 20000) -> EmailContent:
         return EmailContent(
@@ -317,6 +329,18 @@ def test_get_status() -> None:
         cleanup()
     assert result.is_error in (False, None)
     assert "INBOX" in result.content[0].text
+
+
+def test_search_emails_passes_has_attachment() -> None:
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        result = call("search_emails", {"query": "x", "has_attachment": True})
+    finally:
+        cleanup()
+    assert result.is_error in (False, None)
+    assert mailbox.last_search.get("has_attachment") is True
+    assert "Trouve" in result.content[0].text
 
 
 def test_daily_digest() -> None:

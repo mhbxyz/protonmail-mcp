@@ -10,6 +10,7 @@ from protonmail_mcp.parsing import (
     html_to_markdown,
     html_to_text,
     strip_quoted,
+    structure_has_attachment,
     summary_from_header,
     thread_parent_ids,
     truncate,
@@ -203,3 +204,87 @@ def test_full_from_message_exposes_rendering_metadata() -> None:
     assert email.content_trust == "untrusted"
     assert email.quoted_removed is False
     assert "Bonjour," in email.body_text
+
+
+TEXT_PLAIN_STRUCTURE = (
+    b"text",
+    b"plain",
+    (b"charset", b"utf-8"),
+    None,
+    None,
+    b"quoted-printable",
+    14,
+    1,
+    None,
+    None,
+    None,
+    None,
+)
+PDF_PART_STRUCTURE = (
+    b"application",
+    b"pdf",
+    (b"filename", b"probe.pdf", b"name", b"probe.pdf"),
+    None,
+    None,
+    b"base64",
+    8,
+    None,
+    (b"attachment", (b"filename", b"probe.pdf")),
+    None,
+    None,
+)
+MIXED_STRUCTURE = (
+    [TEXT_PLAIN_STRUCTURE, PDF_PART_STRUCTURE],
+    b"mixed",
+    (b"boundary", b"x"),
+    None,
+    None,
+    None,
+)
+ALTERNATIVE_STRUCTURE = (
+    [
+        TEXT_PLAIN_STRUCTURE,
+        (
+            b"text",
+            b"html",
+            (b"charset", b"utf-8"),
+            None,
+            None,
+            b"quoted-printable",
+            20,
+            1,
+            None,
+            None,
+            None,
+            None,
+        ),
+    ],
+    b"alternative",
+    (b"boundary", b"y"),
+    None,
+    None,
+    None,
+)
+INLINE_TEXT_ATTACHMENT_STRUCTURE = (
+    b"text",
+    b"plain",
+    (b"charset", b"utf-8"),
+    None,
+    None,
+    b"7bit",
+    5,
+    1,
+    (b"attachment", (b"filename", b"note.txt")),
+    None,
+    None,
+)
+
+
+def test_structure_has_attachment() -> None:
+    assert structure_has_attachment(MIXED_STRUCTURE) is True
+    assert structure_has_attachment(PDF_PART_STRUCTURE) is True
+    assert structure_has_attachment(INLINE_TEXT_ATTACHMENT_STRUCTURE) is True
+    assert structure_has_attachment(TEXT_PLAIN_STRUCTURE) is False
+    assert structure_has_attachment(ALTERNATIVE_STRUCTURE) is False
+    assert structure_has_attachment(None) is False
+    assert structure_has_attachment(b"garbage") is False

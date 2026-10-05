@@ -515,6 +515,89 @@ def test_search_criteria_combination() -> None:
     assert BridgeClient._search_criteria("", False, None, None, None, None, None) == ["ALL"]
 
 
+TEXT_PLAIN_STRUCTURE = (
+    b"text", b"plain", (b"charset", b"utf-8"), None, None,
+    b"quoted-printable", 14, 1, None, None, None, None,
+)
+MIXED_STRUCTURE = (
+    [
+        TEXT_PLAIN_STRUCTURE,
+        (
+            b"application", b"pdf",
+            (b"filename", b"probe.pdf", b"name", b"probe.pdf"),
+            None, None, b"base64", 8, None,
+            (b"attachment", (b"filename", b"probe.pdf")), None, None,
+        ),
+    ],
+    b"mixed", (b"boundary", b"x"), None, None, None,
+)
+
+
+def test_search_emails_with_attachment_filter() -> None:
+    fake = FakeIMAPClient(
+        search_results=[1, 2],
+        fetch_results={
+            1: {
+                b"BODYSTRUCTURE": MIXED_STRUCTURE,
+                b"FLAGS": (),
+                b"RFC822.SIZE": 10,
+                b"RFC822.HEADER": HEADER,
+            },
+            2: {
+                b"BODYSTRUCTURE": TEXT_PLAIN_STRUCTURE,
+                b"FLAGS": (),
+                b"RFC822.SIZE": 10,
+                b"RFC822.HEADER": HEADER,
+            },
+        },
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    result = client.search_emails("facture", has_attachment=True)
+    assert [message.uid for message in result.messages] == [1]
+    assert result.scanned == 2
+    assert result.truncated is False
+
+
+def test_search_emails_without_attachment_filter_does_not_scan() -> None:
+    fake = FakeIMAPClient(
+        search_results=[1],
+        fetch_results={1: {b"FLAGS": (), b"RFC822.SIZE": 5, b"RFC822.HEADER": HEADER}},
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    result = client.search_emails("facture")
+    assert [message.uid for message in result.messages] == [1]
+    assert result.scanned == 0
+    assert result.truncated is False
+
+
+def test_search_emails_attachment_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    import protonmail_mcp.bridge as bridge_module
+
+    monkeypatch.setattr(bridge_module, "ATTACHMENT_SCAN_LIMIT", 1)
+    fake = FakeIMAPClient(
+        search_results=[1, 2],
+        fetch_results={
+            1: {
+                b"BODYSTRUCTURE": MIXED_STRUCTURE,
+                b"FLAGS": (),
+                b"RFC822.SIZE": 10,
+                b"RFC822.HEADER": HEADER,
+            },
+            2: {
+                b"BODYSTRUCTURE": MIXED_STRUCTURE,
+                b"FLAGS": (),
+                b"RFC822.SIZE": 10,
+                b"RFC822.HEADER": HEADER,
+            },
+        },
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    result = client.search_emails("facture", has_attachment=True)
+    assert result.scanned == 1
+    assert result.truncated is True
+    assert [message.uid for message in result.messages] == [1]
+
+
 def test_get_raw_returns_full_message() -> None:
     fake = FakeIMAPClient(
         search_results=[9],

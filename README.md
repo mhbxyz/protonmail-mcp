@@ -40,7 +40,7 @@ Every mutation is prepare/commit with payload-bound confirmation tokens; see
 | `list_folders` | List every folder and label, with IMAP flags and whether it is selectable |
 | `get_status` | Total and unread counts per folder, without fetching messages |
 | `list_emails` | Most recent messages in a folder, newest first, with a pagination cursor: `limit`, `unread_only`, `since_days`, `sender`, `subject`, `before` |
-| `search_emails` | Structured search: `query` (full-text) plus `sender`, `recipient`, `subject`, `since_days`, `before_days`, `unread_only` |
+| `search_emails` | Structured search: `query` (full-text) plus `sender`, `recipient`, `subject`, `since_days`, `before_days`, `unread_only`, `has_attachment` (bounded BODYSTRUCTURE scan, reports `scanned`/`truncated`) |
 | `read_email` | Read one message by `Message-ID`: decoded body (quotes/signature stripped, `quoted_removed` flag), optional HTML→Markdown, link inventory, untrusted-content marker |
 | `get_thread` | Reconstruct a conversation across All Mail using References/In-Reply-To |
 | `daily_digest` | Unread count plus compact recent-message summaries for a folder |

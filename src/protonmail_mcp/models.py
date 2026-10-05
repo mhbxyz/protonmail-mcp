@@ -81,6 +81,12 @@ class EmailPage(BaseModel):
     next_cursor: str | None = None
 
 
+class SearchResult(BaseModel):
+    messages: list[EmailSummary] = Field(default_factory=list)
+    scanned: int = 0
+    truncated: bool = False
+
+
 class Digest(BaseModel):
     folder: str
     since_days: int

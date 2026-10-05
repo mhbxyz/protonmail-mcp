@@ -65,6 +65,7 @@ from .models import (
     OrganizeResult,
     PreparedAction,
     SavedFile,
+    SearchResult,
 )
 from .parsing import AttachmentPart
 from .policy import Policy, load_policy
@@ -734,7 +735,8 @@ def build_server(
         since_days: int | None = None,
         before_days: int | None = None,
         unread_only: bool = False,
-    ) -> list[EmailSummary]:
+        has_attachment: bool = False,
+    ) -> SearchResult:
         """Search messages, newest first. All filters combine with AND.
 
         Args:
@@ -747,6 +749,10 @@ def build_server(
             since_days: Only messages received in the last N days.
             before_days: Only messages received before N days ago.
             unread_only: Only unread messages when true.
+            has_attachment: Only messages carrying an attachment. IMAP cannot search on
+                this, so up to 200 newest candidates are checked with BODYSTRUCTURE;
+                the result reports how many were scanned and whether the set was
+                truncated.
         """
         try:
             return get_client().search_emails(
@@ -759,6 +765,7 @@ def build_server(
                 since_days=since_days,
                 before_days=before_days,
                 unread_only=unread_only,
+                has_attachment=has_attachment,
             )
         except (ConfigError, MailboxError) as exc:
             raise _guard(exc) from exc
