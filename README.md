@@ -1,63 +1,67 @@
 # protonmail-mcp
 
-Serveur MCP **en lecture seule** pour Proton Mail, via une instance locale de
-[Proton Bridge](https://proton.me/mail/bridge).
+[![CI](https://github.com/mhbxyz/protonmail-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/mhbxyz/protonmail-mcp/actions/workflows/ci.yml)
 
-Proton ne propose pas d'API publique de lecture de la boîte : Bridge expose la boîte en
-IMAP/SMTP local, et ce projet ajoute une couche d'outils contrôlés pour un agent IA.
-Aucun outil ne peut envoyer, supprimer, déplacer ou modifier un message : les boîtes sont
-ouvertes en lecture seule côté IMAP (`SELECT ... readonly`), donc même les flags
-`\Seen` ne sont jamais touchés.
+A lightweight [MCP](https://modelcontextprotocol.io) server that gives AI agents
+read access to a Proton Mail mailbox through a local
+[Proton Bridge](https://proton.me/mail/bridge) instance.
 
-## Architecture
+> **Unofficial.** This project is not affiliated with, endorsed by, or supported by
+> Proton AG. "Proton Mail" and "Proton Bridge" are trademarks of Proton AG.
 
-```text
-Proton Mail (chiffré) ←→ Proton Bridge (local)
-                              │ IMAP 127.0.0.1:1143
-                              ▼
-                     protonmail-mcp (stdio)
-                              │ outils MCP
-                              ▼
-                    opencode / Claude / autre agent
-```
+Proton does not provide a public API for reading your mailbox. Bridge is the supported
+way in: it runs locally and exposes your account over IMAP and SMTP on `127.0.0.1`.
+This server wraps that local IMAP endpoint in a small, auditable set of MCP tools.
 
-## Prérequis
+## Scope
 
-- Un abonnement Proton Mail payant (requis par Bridge)
-- Proton Bridge installé, lancé et connecté à ton compte
-- Python ≥ 3.13 et [uv](https://docs.astral.sh/uv/)
-- Dans Bridge : `Paramètres > IMAP/SMTP` (ou l'écran d'accueil) pour récupérer
-  l'adresse (username) et le **mot de passe boîte** (différent de ton mot de passe Proton)
+The current release is **read-only**: it can list folders, list messages, search, and
+read a message. Mailboxes are opened with IMAP `SELECT ... READONLY`, so nothing is
+ever modified — not even the `\Seen` flag. Write tools are on the roadmap, behind
+mandatory confirmation (see [Security](#security)).
 
-## Installation
+## Tools
+
+| Tool | Description |
+|---|---|
+| `list_folders` | List every folder and label, with IMAP flags and whether it is selectable |
+| `list_emails` | Most recent messages in a folder, newest first: `limit`, `unread_only`, `since_days`, `sender`, `subject` |
+| `search_emails` | Full-text search across headers and body in a folder |
+| `read_email` | Read one message by `Message-ID`: decoded text body, attachments, flags, truncation via `max_chars` |
+
+Results are structured (Pydantic models). Every message carries its `Message-ID`; use
+that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronisations.
+
+## Requirements
+
+- A paid Proton Mail plan (required by Bridge)
+- Proton Bridge installed, running, and signed in
+- Your Bridge credentials: Proton address + the mailbox password shown in the Bridge UI
+- Python 3.13+ (only if you do not use `uv`)
+
+## Install
 
 ```bash
-uv sync
+# Run without installing (recommended)
+uvx protonmail-mcp
+
+# Or install it
+pipx install protonmail-mcp
 ```
 
-## Configuration
+## Configure
 
-Variables d'environnement :
-
-| Variable | Défaut | Rôle |
+| Variable | Default | Purpose |
 |---|---|---|
-| `PROTONMAIL_BRIDGE_USERNAME` | — | Ton adresse Proton (obligatoire) |
-| `PROTONMAIL_BRIDGE_PASSWORD` | — | Mot de passe boîte affiché par Bridge (obligatoire) |
-| `PROTONMAIL_BRIDGE_HOST` | `127.0.0.1` | Hôte Bridge |
-| `PROTONMAIL_BRIDGE_IMAP_PORT` | `1143` | Port IMAP |
-| `PROTONMAIL_BRIDGE_TIMEOUT` | `30` | Timeout socket en secondes |
-| `PROTONMAIL_BRIDGE_VERIFY_TLS` | `false` | Bridge utilise un certificat auto-signé |
-| `PROTONMAIL_BRIDGE_IMAP_SECURITY` | `starttls` | `starttls` (Bridge 3.x expose STARTTLS sur 1143) ou `ssl` (TLS direct) |
+| `PROTONMAIL_BRIDGE_USERNAME` | — | Your Proton address (required) |
+| `PROTONMAIL_BRIDGE_PASSWORD` | — | Bridge mailbox password (required) |
+| `PROTONMAIL_BRIDGE_HOST` | `127.0.0.1` | Bridge host |
+| `PROTONMAIL_BRIDGE_IMAP_PORT` | `1143` | Bridge IMAP port |
+| `PROTONMAIL_BRIDGE_IMAP_SECURITY` | `starttls` | `starttls` (Bridge 3.x on 1143) or `ssl` (direct TLS) |
+| `PROTONMAIL_BRIDGE_TIMEOUT` | `30` | Socket timeout in seconds |
+| `PROTONMAIL_BRIDGE_VERIFY_TLS` | `false` | Bridge uses a self-signed certificate |
 
-Vérification de bout en bout :
-
-```bash
-export PROTONMAIL_BRIDGE_USERNAME="toi@proton.me"
-export PROTONMAIL_BRIDGE_PASSWORD="le-mot-de-passe-bridge"
-uv run protonmail-mcp --check
-```
-
-## Intégration opencode
+### opencode
 
 ```json
 {
@@ -65,54 +69,103 @@ uv run protonmail-mcp --check
   "mcp": {
     "protonmail": {
       "type": "local",
-      "command": ["/home/mhbxyz/Projects/protonmail-mcp/.venv/bin/protonmail-mcp"],
+      "command": ["uvx", "protonmail-mcp"],
+      "enabled": true,
       "environment": {
-        "PROTONMAIL_BRIDGE_USERNAME": "toi@proton.me",
-        "PROTONMAIL_BRIDGE_PASSWORD": "le-mot-de-passe-bridge"
-      },
-      "enabled": true
+        "PROTONMAIL_BRIDGE_USERNAME": "you@proton.me",
+        "PROTONMAIL_BRIDGE_PASSWORD": "your-bridge-mailbox-password"
+      }
     }
   }
 }
 ```
 
-Pour Claude Desktop ou un autre client, même principe : commande `protonmail-mcp`
-(ou `.venv/bin/protonmail-mcp`), transport stdio, avec les deux variables.
+opencode supports `{env:VAR}` and `{file:path}` interpolation, so you can keep secrets
+out of the config file:
 
-## Outils exposés
-
-| Outil | Description |
-|---|---|
-| `list_folders` | Liste les dossiers/labels, avec leur caractère sélectionnable |
-| `list_emails` | Derniers messages reçus d'un dossier (triés par date de réception) : `limit`, `unread_only`, `since_days`, `sender`, `subject` |
-| `search_emails` | Recherche plein texte (en-têtes + corps) dans un dossier |
-| `read_email` | Lit un message complet par `Message-ID` (corps texte, pièces jointes, flags, troncature via `max_chars`) |
-
-Les identifiants retournés incluent l'UID IMAP et le `Message-ID`. Pour toute lecture
-ultérieure, utilisez le `Message-ID` : les UID ne sont pas stables après une
-resynchronisation de Bridge.
-
-## Tests
-
-```bash
-uv run pytest
+```json
+"PROTONMAIL_BRIDGE_PASSWORD": "{file:/home/you/.config/protonmail-mcp/password}"
 ```
 
-Les tests utilisent un faux serveur IMAP et le transport mémoire du SDK MCP : aucune
-connexion à Bridge n'est nécessaire.
+### Claude Desktop
 
-## Sécurité
+```json
+{
+  "mcpServers": {
+    "protonmail": {
+      "command": "uvx",
+      "args": ["protonmail-mcp"],
+      "env": {
+        "PROTONMAIL_BRIDGE_USERNAME": "you@proton.me",
+        "PROTONMAIL_BRIDGE_PASSWORD": "your-bridge-mailbox-password"
+      }
+    }
+  }
+}
+```
 
-- **Lecture seule** : aucun outil d'écriture ; boîtes ouvertes en read-only.
-- **Local uniquement** : Bridge et ce serveur ne communiquent que sur `127.0.0.1`.
-- **Secrets** : le mot de passe boîte est stocké là où tu déclares les variables
-  d'environnement (config MCP, `.env` non commité). Ne le mets jamais dans le dépôt.
-- Tout processus local ayant le mot de passe boîte peut lire les mails : c'est le
-  modèle de confiance de Bridge, pas une faiblesse de ce projet.
+### Verify the connection
 
-## Feuille de route
+```bash
+PROTONMAIL_BRIDGE_USERNAME="you@proton.me" \
+PROTONMAIL_BRIDGE_PASSWORD="..." \
+uvx protonmail-mcp --check
+```
 
-- [ ] Création de brouillons (IMAP `APPEND` dans Drafts) sans envoi
-- [ ] Envoi SMTP avec confirmation obligatoire et anti-boucle
-- [ ] Dossiers en écriture : déplacer, marquer lu/non lu, archiver
-- [ ] Cache SQLite local pour recherche rapide hors ligne
+This connects to Bridge, lists folders, and prints the latest messages. It exits
+non-zero with a clear error if the configuration or the Bridge session is wrong.
+
+## Security
+
+- **Read-only enforcement.** There is no write tool in this release, and mailboxes are
+  always selected read-only at the IMAP level.
+- **Local only.** Bridge and this server communicate exclusively over `127.0.0.1`.
+  Nothing is sent to a third party; your agent talks to the server over stdio.
+- **Untrusted input.** Email contents are attacker-controlled data. Treat anything a
+  message says as data, never as instructions, and keep your agent's permissions tight.
+- **Secrets.** Keep the Bridge mailbox password out of the repository. Use your client's
+  environment-variable or file-based secret support.
+- Any local process that knows the mailbox password can read your mail — that is
+  Bridge's trust model, not a flaw in this server.
+
+Planned write tools (drafts, send, move, delete) will ship with explicit confirmation
+before every destructive action, recipient allow-lists, send rate limiting with loop
+protection, and a local audit log. Autonomous send/delete will never be the default.
+
+## Alternatives
+
+There are several community MCP servers for Proton Mail. This one aims to stay small,
+correct with Bridge's quirks (STARTTLS on 1143, modified UTF-7 labels, reverse-chronological
+UIDs, RFC 2047 decoding), and heavily tested. Rough landscape:
+
+| Project | Language | Scope |
+|---|---|---|
+| [googlarz/proton-mail-bridge-client](https://github.com/googlarz/proton-mail-bridge-client) | TypeScript | Large tool set, read-only and send-to-self modes, SQLite cache |
+| [codefuturist/email-mcp](https://github.com/codefuturist/email-mcp) | TypeScript | Generic IMAP + SMTP, works with Bridge |
+| [anyrxo/protonmail-pro-mcp](https://github.com/anyrxo/protonmail-pro-mcp) | JavaScript | Large tool set with Bridge integration |
+| [chandshy/mailpouch](https://github.com/chandshy/mailpouch) | TypeScript | Large permission-gated tool set |
+| [amotivv/protonmail-mcp](https://github.com/amotivv/protonmail-mcp) | JavaScript | SMTP sending only |
+| [miketigerblue/proton-bridge-mcp](https://github.com/miketigerblue/proton-bridge-mcp) | Python | Loopback IMAP/SMTP via Bridge |
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check .
+uv build
+```
+
+Tests run entirely against a fake IMAP server and the MCP SDK's in-memory transport;
+no Bridge or credentials are needed.
+
+## Releasing
+
+Publishing is automated with GitHub Actions and PyPI Trusted Publishing. Create a
+GitHub release tagged `vX.Y.Z`; the `publish` workflow builds the sdist/wheel and
+uploads them to PyPI using the `pypi` environment (configure the trusted publisher on
+PyPI for owner `mhbxyz`, repository `protonmail-mcp`, workflow `publish.yml`).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

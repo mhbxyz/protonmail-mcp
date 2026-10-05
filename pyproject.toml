@@ -1,7 +1,7 @@
 [project]
 name = "protonmail-mcp"
 version = "0.1.0"
-description = "Read-only MCP server for Proton Mail via Proton Bridge (IMAP/SMTP)"
+description = "MCP server for Proton Mail via Proton Bridge (IMAP/SMTP)"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
@@ -29,6 +29,8 @@ protonmail-mcp = "protonmail_mcp.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/mhbxyz/protonmail-mcp"
+Repository = "https://github.com/mhbxyz/protonmail-mcp"
+Issues = "https://github.com/mhbxyz/protonmail-mcp/issues"
 
 [dependency-groups]
 dev = [
