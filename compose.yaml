@@ -1,0 +1,19 @@
+name: protonmail-mcp
+
+services:
+  mcp-http:
+    build: .
+    image: protonmail-mcp:local
+    network_mode: host
+    command: ["--http", "--host", "127.0.0.1", "--port", "8765"]
+    environment:
+      PROTONMAIL_BRIDGE_USERNAME: ${PROTONMAIL_BRIDGE_USERNAME:?set it in .env}
+      PROTONMAIL_BRIDGE_PASSWORD: ${PROTONMAIL_BRIDGE_PASSWORD:?set it in .env}
+      PROTONMAIL_MCP_HTTP_TOKEN: ${PROTONMAIL_MCP_HTTP_TOKEN:?set it in .env}
+      PROTONMAIL_MCP_MODE: ${PROTONMAIL_MCP_MODE:-read}
+    volumes:
+      - protonmail-data:/data
+    restart: unless-stopped
+
+volumes:
+  protonmail-data:

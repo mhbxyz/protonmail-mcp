@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+dist
+build
+tests
+docs
+ROADMAP.md
+SECURITY.md
+opencode.json
+.env
+.env.example
+policy.example.toml
+compose.yaml

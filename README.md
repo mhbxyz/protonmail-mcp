@@ -246,6 +246,9 @@ protonmail-mcp --http --host 127.0.0.1 --port 8765
 - Every request must send `Authorization: Bearer <token>`; anything else gets a `401`.
 - Clients connect to `http://127.0.0.1:8765/mcp`.
 
+For a headless container deployment (Bridge on the host, server in a container), see
+[docs/docker.md](docs/docker.md).
+
 ## Security
 
 - **Read-only enforcement.** There is no write tool in this release, and mailboxes are
