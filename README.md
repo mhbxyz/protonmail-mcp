@@ -47,6 +47,7 @@ Variables d'environnement :
 | `PROTONMAIL_BRIDGE_IMAP_PORT` | `1143` | Port IMAP |
 | `PROTONMAIL_BRIDGE_TIMEOUT` | `30` | Timeout socket en secondes |
 | `PROTONMAIL_BRIDGE_VERIFY_TLS` | `false` | Bridge utilise un certificat auto-signé |
+| `PROTONMAIL_BRIDGE_IMAP_SECURITY` | `starttls` | `starttls` (Bridge 3.x expose STARTTLS sur 1143) ou `ssl` (TLS direct) |
 
 Vérification de bout en bout :
 

@@ -39,6 +39,7 @@ class BridgeConfig:
     password: str
     timeout: float
     verify_tls: bool
+    imap_security: str = "starttls"
 
     @classmethod
     def from_env(cls) -> BridgeConfig:
@@ -55,6 +56,11 @@ class BridgeConfig:
             timeout = float(timeout_raw) if timeout_raw else DEFAULT_TIMEOUT
         except ValueError as exc:
             raise ConfigError(f"PROTONMAIL_BRIDGE_TIMEOUT must be a number, got {timeout_raw!r}") from exc
+        security = os.environ.get("PROTONMAIL_BRIDGE_IMAP_SECURITY", "starttls").strip().lower()
+        if security not in {"starttls", "ssl"}:
+            raise ConfigError(
+                f"PROTONMAIL_BRIDGE_IMAP_SECURITY must be 'starttls' or 'ssl', got {security!r}"
+            )
         return cls(
             host=os.environ.get("PROTONMAIL_BRIDGE_HOST", DEFAULT_HOST).strip() or DEFAULT_HOST,
             imap_port=_int_env("PROTONMAIL_BRIDGE_IMAP_PORT", DEFAULT_IMAP_PORT),
@@ -63,6 +69,7 @@ class BridgeConfig:
             password=password,
             timeout=timeout,
             verify_tls=_bool_env("PROTONMAIL_BRIDGE_VERIFY_TLS", False),
+            imap_security=security,
         )
 
     @property

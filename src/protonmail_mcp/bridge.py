@@ -155,13 +155,22 @@ class BridgeClient:
         if not self.config.verify_tls:
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
-        client = IMAPClient(
-            self.config.host,
-            port=self.config.imap_port,
-            ssl=True,
-            ssl_context=context,
-            timeout=self.config.timeout,
-        )
+        if self.config.imap_security == "ssl":
+            client = IMAPClient(
+                self.config.host,
+                port=self.config.imap_port,
+                ssl=True,
+                ssl_context=context,
+                timeout=self.config.timeout,
+            )
+        else:
+            client = IMAPClient(
+                self.config.host,
+                port=self.config.imap_port,
+                ssl=False,
+                timeout=self.config.timeout,
+            )
+            client.starttls(ssl_context=context)
         client.login(self.config.username, self.config.password)
         return client
 
