@@ -92,6 +92,9 @@ that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronis
 # Run without installing (recommended)
 uvx protonmail-mcp
 
+# Force uvx to pick up the newest release if an older one is cached
+uvx --refresh protonmail-mcp
+
 # Or install it
 pipx install protonmail-mcp
 ```
