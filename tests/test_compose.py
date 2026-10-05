@@ -7,6 +7,7 @@ import pytest
 
 from protonmail_mcp.compose import (
     ComposeError,
+    DraftAttachment,
     build_draft,
     build_forward,
     build_reply,
@@ -167,3 +168,45 @@ def test_draft_view_flags_external_recipients() -> None:
     assert view.body_text.strip() == "Body"
     assert "Subject: Hi" in view.raw_text
     assert view.headers["Subject"] == "Hi"
+
+
+def test_build_draft_with_attachment() -> None:
+    composed = build_draft(
+        "me@proton.me",
+        to="alice@example.com",
+        subject="With file",
+        body="See attached.",
+        attachments=[
+            DraftAttachment(
+                filename="rapport.pdf",
+                content_type="application/pdf",
+                data=b"%PDF-1.4",
+            )
+        ],
+    )
+    message = message_from_bytes(composed.raw, policy=default_policy)
+    parts = [part for part in message.walk() if part.get_filename()]
+    assert [part.get_filename() for part in parts] == ["rapport.pdf"]
+    assert parts[0].get_content_type() == "application/pdf"
+    assert parts[0].get_payload(decode=True) == b"%PDF-1.4"
+
+
+def test_build_forward_with_attachments() -> None:
+    original = sample_original()
+    original.attachments = [
+        Attachment(filename="doc.pdf", content_type="application/pdf", size_bytes=4)
+    ]
+    composed = build_forward(
+        original,
+        "me@proton.me",
+        to="friend@example.com",
+        attachments=[
+            DraftAttachment(
+                filename="doc.pdf", content_type="application/pdf", data=b"data"
+            )
+        ],
+    )
+    message = message_from_bytes(composed.raw, policy=default_policy)
+    names = [part.get_filename() for part in message.walk() if part.get_filename()]
+    assert names == ["doc.pdf"]
+    assert b"---------- Forwarded message ----------" in composed.raw

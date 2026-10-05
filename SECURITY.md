@@ -102,7 +102,9 @@ The LLM cannot grant itself privileges: allowlists, quotas, and caps live in the
 - Bulk-operation caps and mandatory dry-run above a threshold
 - Folder and label allowlists
 - Sandboxed file access: attachments and exports can only touch a fixed directory, with
-  path-traversal protection and filename sanitization
+  path-traversal protection and filename sanitization. Draft attachments are read from
+  that sandbox only; attachments re-attached when forwarding come from the original
+  message, are filename-sanitized, and are capped per file and in total.
 
 ### Send safeguards
 

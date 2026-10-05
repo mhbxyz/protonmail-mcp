@@ -21,6 +21,26 @@ class StoredFile:
     size_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class SandboxFile:
+    filename: str
+    data: bytes
+    size_bytes: int
+
+
+def read_from_sandbox(directory: Path, name: str, *, max_bytes: int) -> SandboxFile:
+    root = directory.resolve()
+    target = (root / safe_filename(name)).resolve()
+    if not target.is_relative_to(root):
+        raise SandboxError("refusing to read outside the sandbox")
+    if not target.is_file():
+        raise SandboxError(f"file not found in the sandbox: {target.name!r}")
+    data = target.read_bytes()
+    if len(data) > max_bytes:
+        raise SandboxError(f"file is too large ({len(data)} bytes; limit {max_bytes})")
+    return SandboxFile(filename=target.name, data=data, size_bytes=len(data))
+
+
 def sandbox_directory(policy: Policy) -> Path:
     return Path(policy.files.directory).expanduser()
 

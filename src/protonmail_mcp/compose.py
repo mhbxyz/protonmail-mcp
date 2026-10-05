@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email import message_from_bytes
@@ -25,6 +26,13 @@ class ComposeError(ValueError):
 class ComposedDraft:
     raw: bytes
     message_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DraftAttachment:
+    filename: str
+    content_type: str
+    data: bytes
 
 
 def _reject_control_chars(value: str, *, field: str) -> str:
@@ -67,6 +75,7 @@ def build_draft(
     body: str = "",
     in_reply_to: str = "",
     references: str = "",
+    attachments: Sequence[DraftAttachment] = (),
 ) -> ComposedDraft:
     message = EmailMessage()
     message["From"] = _reject_control_chars(sender, field="From")
@@ -85,6 +94,14 @@ def build_draft(
     if references:
         message["References"] = _reject_control_chars(references, field="References")
     message.set_content(body)
+    for attachment in attachments:
+        maintype, _, subtype = attachment.content_type.partition("/")
+        message.add_attachment(
+            attachment.data,
+            maintype=maintype or "application",
+            subtype=subtype or "octet-stream",
+            filename=attachment.filename,
+        )
     return ComposedDraft(raw=message.as_bytes(), message_id=message_id)
 
 
@@ -184,6 +201,7 @@ def build_reply(
     *,
     body: str = "",
     reply_all: bool = False,
+    attachments: Sequence[DraftAttachment] = (),
 ) -> ComposedDraft:
     to, cc = reply_recipients(original, sender, reply_all)
     chain = " ".join(part for part in (original.references, original.message_id) if part)
@@ -197,6 +215,7 @@ def build_reply(
         body=text,
         in_reply_to=original.message_id,
         references=chain,
+        attachments=attachments,
     )
 
 
@@ -206,6 +225,7 @@ def build_forward(
     *,
     to: str = "",
     body: str = "",
+    attachments: Sequence[DraftAttachment] = (),
 ) -> ComposedDraft:
     block = forwarded_block(original)
     text = f"{body.rstrip()}\n\n{block}" if body.strip() else block
@@ -214,6 +234,7 @@ def build_forward(
         to=to,
         subject=forward_subject(original.subject),
         body=text,
+        attachments=attachments,
     )
 
 

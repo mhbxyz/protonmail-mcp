@@ -55,7 +55,9 @@ additional tools are registered: `list_drafts`, `create_draft`, `preview_draft` 
 the exact MIME without saving it), and `prepare_*`/`commit_*` pairs for replying,
 forwarding, updating, and deleting drafts. Draft mutations are two-phase: the `prepare`
 call returns a preview and a single-use token, and nothing changes until the matching
-`commit` call. Repeated identical draft creations within the idempotency window (default
+`commit` call. Draft attachments always come from the local sandbox (`files.directory`);
+`prepare_forward_draft`/`commit_forward_draft` can additionally re-attach the original
+message's attachments with `include_attachments=true`, subject to the message size cap. Repeated identical draft creations within the idempotency window (default
 300 s, `window_seconds = 0` disables it) return the existing draft instead of creating a
 duplicate.
 

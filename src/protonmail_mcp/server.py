@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import mimetypes
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -19,6 +20,7 @@ from .audit import AuditLog
 from .bridge import BridgeClient, MailboxError, MessageNotFoundError
 from .compose import (
     ComposeError,
+    DraftAttachment,
     build_draft,
     build_forward,
     build_reply,
@@ -35,7 +37,13 @@ from .confirmations import (
     PreparedConfirmation,
     payload_digest,
 )
-from .files import SandboxError, sandbox_directory, write_in_sandbox
+from .files import (
+    SandboxError,
+    read_from_sandbox,
+    safe_filename,
+    sandbox_directory,
+    write_in_sandbox,
+)
 from .idempotency import DraftReference, IdempotencyStore
 from .index import MessageIndex
 from .journal import MoveEntry, MoveJournal
@@ -159,7 +167,15 @@ def _clamp(limit: int) -> int:
     return max(1, min(int(limit), 100))
 
 
-def _update_payload(uid: int, to: str, cc: str, bcc: str, subject: str, body: str) -> dict[str, Any]:
+def _update_payload(
+    uid: int,
+    to: str,
+    cc: str,
+    bcc: str,
+    subject: str,
+    body: str,
+    attachments: Sequence[str] | None = None,
+) -> dict[str, Any]:
     return {
         "action": "update_draft",
         "uid": uid,
@@ -168,6 +184,7 @@ def _update_payload(uid: int, to: str, cc: str, bcc: str, subject: str, body: st
         "bcc": bcc,
         "subject": subject,
         "body": body,
+        "attachments": list(attachments or []),
     }
 
 
@@ -175,23 +192,39 @@ def _delete_payload(uid: int) -> dict[str, Any]:
     return {"action": "delete_draft", "uid": uid}
 
 
-def _reply_payload(message_id: str, folder: str, body: str, reply_all: bool) -> dict[str, Any]:
+def _reply_payload(
+    message_id: str,
+    folder: str,
+    body: str,
+    reply_all: bool,
+    attachments: Sequence[str] | None = None,
+) -> dict[str, Any]:
     return {
         "action": "reply_draft",
         "message_id": message_id,
         "folder": folder,
         "body": body,
         "reply_all": reply_all,
+        "attachments": list(attachments or []),
     }
 
 
-def _forward_payload(message_id: str, folder: str, to: str, body: str) -> dict[str, Any]:
+def _forward_payload(
+    message_id: str,
+    folder: str,
+    to: str,
+    body: str,
+    include_attachments: bool = False,
+    attachments: Sequence[str] | None = None,
+) -> dict[str, Any]:
     return {
         "action": "forward_draft",
         "message_id": message_id,
         "folder": folder,
         "to": to,
         "body": body,
+        "include_attachments": include_attachments,
+        "attachments": list(attachments or []),
     }
 
 
@@ -487,6 +520,64 @@ def _select_attachment(
         return parts[0]
     names = ", ".join(repr(part.filename) for part in parts)
     raise SandboxError(f"multiple attachments; pass filename or index: {names}")
+
+
+def _unique_filename(filename: str, counts: dict[str, int]) -> str:
+    if filename not in counts:
+        counts[filename] = 0
+        return filename
+    counts[filename] += 1
+    base, dot, extension = filename.rpartition(".")
+    suffix = counts[filename]
+    return f"{base}-{suffix}.{extension}" if dot else f"{filename}-{suffix}"
+
+
+def _sandbox_attachments(
+    policy: Policy, names: Sequence[str], *, max_total: int
+) -> list[DraftAttachment]:
+    attachments: list[DraftAttachment] = []
+    counts: dict[str, int] = {}
+    total = 0
+    for name in names:
+        stored = read_from_sandbox(
+            sandbox_directory(policy), name, max_bytes=policy.files.max_bytes
+        )
+        total += stored.size_bytes
+        if total > max_total:
+            raise SandboxError(
+                f"attachments exceed the message size limit ({total} > {max_total})"
+            )
+        filename = _unique_filename(stored.filename, counts)
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        attachments.append(
+            DraftAttachment(filename=filename, content_type=content_type, data=stored.data)
+        )
+    return attachments
+
+
+def _original_attachments(
+    client: BridgeClient, policy: Policy, message_id: str, folder: str
+) -> list[DraftAttachment]:
+    parts = client.get_attachment_parts(message_id, folder=folder)
+    attachments: list[DraftAttachment] = []
+    counts: dict[str, int] = {}
+    total = 0
+    for part in parts:
+        total += len(part.data)
+        if total > policy.send.max_message_bytes:
+            raise SandboxError(
+                "original attachments exceed the message size limit "
+                f"({total} > {policy.send.max_message_bytes})"
+            )
+        filename = _unique_filename(safe_filename(part.filename, "attachment"), counts)
+        attachments.append(
+            DraftAttachment(
+                filename=filename,
+                content_type=part.content_type or "application/octet-stream",
+                data=part.data,
+            )
+        )
+    return attachments
 
 
 def _undo_preview(entry: MoveEntry) -> PreparedAction:
@@ -918,6 +1009,7 @@ def build_server(
             body: str = "",
             in_reply_to: str = "",
             references: str = "",
+            attachments: list[str] | None = None,
         ) -> DraftCreated:
             """Create a new draft in the Drafts folder. Additive: existing drafts are never
             modified. To change a draft, use prepare_update_draft/commit_update_draft.
@@ -930,6 +1022,7 @@ def build_server(
                 body: Plain-text body.
                 in_reply_to: Optional Message-ID this draft replies to.
                 references: Optional space-separated Message-ID chain.
+                attachments: Sandbox filenames to attach; nothing outside the sandbox.
             """
             try:
                 client = get_client()
@@ -942,6 +1035,7 @@ def build_server(
                     "body": body,
                     "in_reply_to": in_reply_to,
                     "references": references,
+                    "attachments": list(attachments or []),
                 }
                 key = _idempotency_key("create_draft", payload)
                 remembered = _remembered_draft(key, client)
@@ -956,6 +1050,9 @@ def build_server(
                     body=body,
                     in_reply_to=in_reply_to,
                     references=references,
+                    attachments=_sandbox_attachments(
+                        policy, attachments or [], max_total=policy.send.max_message_bytes
+                    ),
                 )
                 uid = client.append_to_drafts(composed.raw)
                 created = DraftCreated(
@@ -966,7 +1063,7 @@ def build_server(
                 )
                 _remember_draft(key, created)
                 return created
-            except (ConfigError, MailboxError, ComposeError) as exc:
+            except (ConfigError, MailboxError, ComposeError, SandboxError) as exc:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=WRITE_ACTION)
@@ -978,6 +1075,7 @@ def build_server(
             bcc: str = "",
             subject: str = "",
             body: str = "",
+            attachments: list[str] | None = None,
         ) -> PreparedAction:
             """Prepare replacing an existing draft's content. Nothing changes until
             commit_update_draft is called with the same arguments and the returned token.
@@ -989,10 +1087,11 @@ def build_server(
                 bcc: New comma-separated blind carbon-copy recipients.
                 subject: New subject line.
                 body: New plain-text body.
+                attachments: Sandbox filenames to attach; nothing outside the sandbox.
             """
             try:
                 existing = get_client().get_draft(uid, max_chars=200)
-                payload = _update_payload(uid, to, cc, bcc, subject, body)
+                payload = _update_payload(uid, to, cc, bcc, subject, body, attachments)
                 preview = {
                     "target": {
                         "uid": uid,
@@ -1005,6 +1104,7 @@ def build_server(
                         "bcc": bcc,
                         "subject": subject,
                         "body_preview": body[:200],
+                        "attachments": list(attachments or []),
                     },
                 }
                 return _prepared_action(CONFIRMATIONS.prepare("update_draft", payload, preview=preview))
@@ -1021,6 +1121,7 @@ def build_server(
             bcc: str = "",
             subject: str = "",
             body: str = "",
+            attachments: list[str] | None = None,
         ) -> DraftCreated:
             """Commit a prepared draft update: creates the replacement draft, then removes
             the old one. The token and every argument must match prepare_update_draft.
@@ -1033,9 +1134,12 @@ def build_server(
                 bcc: New comma-separated blind carbon-copy recipients.
                 subject: New subject line.
                 body: New plain-text body.
+                attachments: Sandbox filenames to attach; nothing outside the sandbox.
             """
             try:
-                CONFIRMATIONS.commit(token, _update_payload(uid, to, cc, bcc, subject, body))
+                CONFIRMATIONS.commit(
+                    token, _update_payload(uid, to, cc, bcc, subject, body, attachments)
+                )
                 client = get_client()
                 composed = build_draft(
                     client.config.username,
@@ -1044,6 +1148,9 @@ def build_server(
                     bcc=validate_recipients(bcc, header="Bcc"),
                     subject=subject,
                     body=body,
+                    attachments=_sandbox_attachments(
+                        policy, attachments or [], max_total=policy.send.max_message_bytes
+                    ),
                 )
                 new_uid = client.replace_draft(uid, composed.raw)
                 return DraftCreated(
@@ -1052,7 +1159,7 @@ def build_server(
                     folder=client.find_drafts_folder(),
                     subject=subject,
                 )
-            except (ConfigError, MailboxError, ComposeError, ConfirmationError) as exc:
+            except (ConfigError, MailboxError, ComposeError, SandboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=WRITE_ACTION)
@@ -1106,6 +1213,7 @@ def build_server(
             folder: str = "INBOX",
             body: str = "",
             reply_all: bool = False,
+            attachments: list[str] | None = None,
         ) -> PreparedAction:
             """Prepare a reply draft to an existing message, with quoting and threading
             headers. Nothing is saved until commit_reply_draft is called with the same
@@ -1116,11 +1224,15 @@ def build_server(
                 folder: Folder containing that message.
                 body: Optional reply text placed above the quoted original.
                 reply_all: Also add the original To/Cc recipients (self excluded).
+                attachments: Sandbox filenames to attach; nothing outside the sandbox.
             """
             try:
                 client = get_client()
                 original = client.get_message(message_id, folder=folder, max_chars=20000)
                 to, cc = reply_recipients(original, client.config.username, reply_all)
+                _sandbox_attachments(
+                    policy, attachments or [], max_total=policy.send.max_message_bytes
+                )
                 preview = {
                     "target": {
                         "message_id": original.message_id,
@@ -1132,16 +1244,17 @@ def build_server(
                         "cc": cc,
                         "subject": reply_subject(original.subject),
                         "body_preview": body[:200],
+                        "attachments": list(attachments or []),
                     },
                 }
                 return _prepared_action(
                     CONFIRMATIONS.prepare(
                         "reply_draft",
-                        _reply_payload(message_id, folder, body, reply_all),
+                        _reply_payload(message_id, folder, body, reply_all, attachments),
                         preview=preview,
                     )
                 )
-            except (ConfigError, MailboxError, ConfirmationError) as exc:
+            except (ConfigError, MailboxError, SandboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=DESTRUCTIVE_WRITE)
@@ -1152,6 +1265,7 @@ def build_server(
             folder: str = "INBOX",
             body: str = "",
             reply_all: bool = False,
+            attachments: list[str] | None = None,
         ) -> DraftCreated:
             """Commit a prepared reply draft. The token and every argument must match
             prepare_reply_draft.
@@ -1162,9 +1276,10 @@ def build_server(
                 folder: Folder containing that message.
                 body: Optional reply text placed above the quoted original.
                 reply_all: Also add the original To/Cc recipients (self excluded).
+                attachments: Sandbox filenames to attach; nothing outside the sandbox.
             """
             try:
-                payload = _reply_payload(message_id, folder, body, reply_all)
+                payload = _reply_payload(message_id, folder, body, reply_all, attachments)
                 CONFIRMATIONS.commit(token, payload)
                 client = get_client()
                 key = _idempotency_key("reply_draft", payload)
@@ -1173,7 +1288,13 @@ def build_server(
                     return remembered
                 original = client.get_message(message_id, folder=folder, max_chars=20000)
                 composed = build_reply(
-                    original, client.config.username, body=body, reply_all=reply_all
+                    original,
+                    client.config.username,
+                    body=body,
+                    reply_all=reply_all,
+                    attachments=_sandbox_attachments(
+                        policy, attachments or [], max_total=policy.send.max_message_bytes
+                    ),
                 )
                 uid = client.append_to_drafts(composed.raw)
                 created = DraftCreated(
@@ -1184,7 +1305,7 @@ def build_server(
                 )
                 _remember_draft(key, created)
                 return created
-            except (ConfigError, MailboxError, ComposeError, ConfirmationError) as exc:
+            except (ConfigError, MailboxError, ComposeError, SandboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=WRITE_ACTION)
@@ -1194,20 +1315,32 @@ def build_server(
             folder: str = "INBOX",
             to: str = "",
             body: str = "",
+            include_attachments: bool = False,
+            attachments: list[str] | None = None,
         ) -> PreparedAction:
             """Prepare a forward draft containing the original message. Nothing is saved
             until commit_forward_draft is called with the same arguments and the returned
-            token. Original attachments are listed by name but not attached.
+            token.
 
             Args:
                 message_id: Message-ID of the message being forwarded.
                 folder: Folder containing that message.
                 to: Comma-separated recipients; may be empty.
                 body: Optional text placed above the forwarded block.
+                include_attachments: Re-attach the original message's attachments.
+                attachments: Additional sandbox filenames to attach.
             """
             try:
                 client = get_client()
                 original = client.get_message(message_id, folder=folder, max_chars=20000)
+                sandbox = _sandbox_attachments(
+                    policy, attachments or [], max_total=policy.send.max_message_bytes
+                )
+                originals: list[DraftAttachment] = []
+                if include_attachments:
+                    originals = _original_attachments(
+                        client, policy, message_id, folder
+                    )
                 preview = {
                     "target": {
                         "message_id": original.message_id,
@@ -1218,16 +1351,22 @@ def build_server(
                         "to": validate_recipients(to, header="To"),
                         "subject": forward_subject(original.subject),
                         "body_preview": body[:200],
+                        "attachments": {
+                            "sandbox": [item.filename for item in sandbox],
+                            "original": [item.filename for item in originals],
+                        },
                     },
                 }
                 return _prepared_action(
                     CONFIRMATIONS.prepare(
                         "forward_draft",
-                        _forward_payload(message_id, folder, to, body),
+                        _forward_payload(
+                            message_id, folder, to, body, include_attachments, attachments
+                        ),
                         preview=preview,
                     )
                 )
-            except (ConfigError, MailboxError, ConfirmationError) as exc:
+            except (ConfigError, MailboxError, SandboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=DESTRUCTIVE_WRITE)
@@ -1238,6 +1377,8 @@ def build_server(
             folder: str = "INBOX",
             to: str = "",
             body: str = "",
+            include_attachments: bool = False,
+            attachments: list[str] | None = None,
         ) -> DraftCreated:
             """Commit a prepared forward draft. The token and every argument must match
             prepare_forward_draft.
@@ -1248,9 +1389,13 @@ def build_server(
                 folder: Folder containing that message.
                 to: Comma-separated recipients; may be empty.
                 body: Optional text placed above the forwarded block.
+                include_attachments: Re-attach the original message's attachments.
+                attachments: Additional sandbox filenames to attach.
             """
             try:
-                payload = _forward_payload(message_id, folder, to, body)
+                payload = _forward_payload(
+                    message_id, folder, to, body, include_attachments, attachments
+                )
                 CONFIRMATIONS.commit(token, payload)
                 client = get_client()
                 key = _idempotency_key("forward_draft", payload)
@@ -1258,11 +1403,19 @@ def build_server(
                 if remembered is not None:
                     return remembered
                 original = client.get_message(message_id, folder=folder, max_chars=20000)
+                composed_attachments = _sandbox_attachments(
+                    policy, attachments or [], max_total=policy.send.max_message_bytes
+                )
+                if include_attachments:
+                    composed_attachments.extend(
+                        _original_attachments(client, policy, message_id, folder)
+                    )
                 composed = build_forward(
                     original,
                     client.config.username,
                     to=validate_recipients(to, header="To"),
                     body=body,
+                    attachments=composed_attachments,
                 )
                 uid = client.append_to_drafts(composed.raw)
                 created = DraftCreated(
@@ -1273,7 +1426,7 @@ def build_server(
                 )
                 _remember_draft(key, created)
                 return created
-            except (ConfigError, MailboxError, ComposeError, ConfirmationError) as exc:
+            except (ConfigError, MailboxError, ComposeError, SandboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=READ_ONLY)

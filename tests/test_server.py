@@ -1313,6 +1313,115 @@ def test_notifications_resource_absent_when_disabled() -> None:
     assert "inbox" not in {resource.name for resource in resources}
 
 
+def draft_files_server(tmp_path: Path, **file_overrides: Any) -> Any:
+    files = FilesPolicy(directory=str(tmp_path / "files"), **file_overrides)
+    policy = Policy(
+        mode="draft",
+        capabilities=Capabilities(draft=True),
+        confirmation_ttl_seconds=300,
+        source="test",
+        files=files,
+    )
+    return build_server(policy)
+
+
+def test_create_draft_with_sandbox_attachment(tmp_path: Path) -> None:
+    (tmp_path / "files").mkdir()
+    (tmp_path / "files" / "note.txt").write_text("hello")
+    built = draft_files_server(tmp_path)
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        result = tool_payload(
+            call_built(
+                built,
+                "create_draft",
+                {"to": "alice@example.com", "subject": "s", "attachments": ["note.txt"]},
+            )
+        )
+    finally:
+        cleanup()
+    assert result["uid"] == 42
+    message = message_from_bytes(mailbox.created[0], policy=default_policy)
+    parts = [part for part in message.walk() if part.get_filename()]
+    assert [part.get_filename() for part in parts] == ["note.txt"]
+    assert parts[0].get_payload(decode=True) == b"hello"
+
+
+def test_create_draft_attachment_outside_sandbox_rejected(tmp_path: Path) -> None:
+    (tmp_path / "files").mkdir()
+    (tmp_path / "secret.txt").write_text("secret")
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        result = call_built(
+            draft_files_server(tmp_path),
+            "create_draft",
+            {"to": "alice@example.com", "attachments": ["../secret.txt"]},
+        )
+    finally:
+        cleanup()
+    assert result.is_error is True
+    assert "sandbox" in result.content[0].text or "not found" in result.content[0].text
+
+
+def test_forward_include_attachments(tmp_path: Path) -> None:
+    built = send_server(tmp_path)
+    mailbox = FakeMailbox()
+    mailbox.raw_message = raw_with_attachment("original.pdf")
+    cleanup = with_mailbox(mailbox)
+    try:
+        prepared = tool_payload(
+            call_built(
+                built,
+                "prepare_forward_draft",
+                {
+                    "message_id": "<m@x>",
+                    "to": "friend@example.com",
+                    "include_attachments": True,
+                },
+            )
+        )
+        assert prepared["preview"]["forward"]["attachments"]["original"] == ["original.pdf"]
+        committed = call_built(
+            built,
+            "commit_forward_draft",
+            {
+                "token": prepared["token"],
+                "message_id": "<m@x>",
+                "to": "friend@example.com",
+                "include_attachments": True,
+            },
+        )
+    finally:
+        cleanup()
+    assert committed.is_error in (False, None)
+    message = message_from_bytes(mailbox.created[0], policy=default_policy)
+    parts = [part for part in message.walk() if part.get_filename()]
+    assert [part.get_filename() for part in parts] == ["original.pdf"]
+    assert parts[0].get_payload(decode=True) == b"payload"
+
+
+def test_forward_original_attachments_oversize(tmp_path: Path) -> None:
+    built = send_server(tmp_path, max_message_bytes=5)
+    mailbox = FakeMailbox()
+    mailbox.raw_message = raw_with_attachment("big.bin")
+    cleanup = with_mailbox(mailbox)
+    try:
+        result = call_built(
+            built,
+            "prepare_forward_draft",
+            {
+                "message_id": "<m@x>",
+                "to": "friend@example.com",
+                "include_attachments": True,
+            },
+        )
+    finally:
+        cleanup()
+    assert result.is_error is True
+    assert "size limit" in result.content[0].text
+
+
 def test_create_draft_is_idempotent() -> None:
     built = draft_server()
     mailbox = FakeMailbox()

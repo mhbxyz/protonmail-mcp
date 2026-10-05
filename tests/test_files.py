@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from protonmail_mcp.files import SandboxError, safe_filename, write_in_sandbox
+from protonmail_mcp.files import (
+    SandboxError,
+    read_from_sandbox,
+    safe_filename,
+    write_in_sandbox,
+)
 
 
 def test_safe_filename_strips_paths_and_controls() -> None:
@@ -36,3 +41,27 @@ def test_write_contains_traversal(tmp_path: Path) -> None:
     stored = write_in_sandbox(tmp_path, "../escape.txt", b"data", max_bytes=10)
     assert Path(stored.path).is_relative_to(tmp_path.resolve())
     assert stored.filename == "escape.txt"
+
+
+def test_read_from_sandbox(tmp_path: Path) -> None:
+    write_in_sandbox(tmp_path, "note.txt", b"hello", max_bytes=10)
+    loaded = read_from_sandbox(tmp_path, "note.txt", max_bytes=10)
+    assert loaded.filename == "note.txt"
+    assert loaded.data == b"hello"
+    assert loaded.size_bytes == 5
+
+
+def test_read_from_sandbox_missing_and_oversize(tmp_path: Path) -> None:
+    with pytest.raises(SandboxError, match="not found"):
+        read_from_sandbox(tmp_path, "nope.txt", max_bytes=10)
+    write_in_sandbox(tmp_path, "big.bin", b"x" * 11, max_bytes=100)
+    with pytest.raises(SandboxError, match="too large"):
+        read_from_sandbox(tmp_path, "big.bin", max_bytes=10)
+
+
+def test_read_from_sandbox_refuses_traversal(tmp_path: Path) -> None:
+    root = tmp_path / "sandbox"
+    root.mkdir()
+    (tmp_path / "secret.txt").write_text("secret")
+    with pytest.raises(SandboxError, match="not found"):
+        read_from_sandbox(root, "../secret.txt", max_bytes=100)
