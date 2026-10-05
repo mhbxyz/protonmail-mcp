@@ -38,6 +38,9 @@ itself (report those to Proton), and physical device theft.
   `\Seen`, is ever modified.
 - The server connects to `127.0.0.1` only and speaks stdio to the MCP client.
 - No telemetry, no requests to third parties.
+- Remote transport is opt-in: streamable HTTP is disabled by default; when enabled, a
+  bearer token is mandatory, the bind defaults to loopback, and TLS is left to a fronting
+  reverse proxy.
 
 ## Automated enforcement
 
