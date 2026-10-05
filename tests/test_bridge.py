@@ -43,6 +43,10 @@ class FakeIMAPClient:
         self.selected: tuple[str, bool] | None = None
         self.last_criteria: Any = None
         self.logged_out = False
+        self.appended: list[tuple[str, bytes, tuple[Any, ...], Any]] = []
+        self.append_response: Any = b"[APPENDUID 1 7] APPEND"
+        self.added_flags: list[tuple[list[int], list[str]]] = []
+        self.expunged: list[list[int] | None] = []
 
     def list_folders(self) -> list[tuple[Any, Any, str]]:
         return self.folders
@@ -60,6 +64,17 @@ class FakeIMAPClient:
 
     def logout(self) -> None:
         self.logged_out = True
+
+    def append(self, folder: str, msg: bytes, flags: tuple[Any, ...] = (), msg_time: Any = None) -> Any:
+        self.appended.append((folder, bytes(msg), tuple(flags), msg_time))
+        return self.append_response
+
+    def add_flags(self, messages: list[int], flags: list[str], silent: bool = False) -> None:
+        self.added_flags.append((list(messages), list(flags)))
+
+    def expunge(self, messages: list[int] | None = None) -> tuple[()]:
+        self.expunged.append(list(messages) if messages else None)
+        return ()
 
 
 def attach(client: BridgeClient, fake: Any) -> BridgeClient:
@@ -179,3 +194,99 @@ def test_protocol_error_becomes_mailbox_error() -> None:
     client = attach(BridgeClient(make_config()), BrokenClient())
     with pytest.raises(MailboxError):
         client.list_folders()
+
+
+DRAFTS_FOLDERS = [
+    ((b"\\Drafts", b"\\Marked"), b"/", "Brouillons"),
+    ((b"\\HasNoChildren",), b"/", "INBOX"),
+]
+
+
+def test_find_drafts_folder_by_special_use_flag() -> None:
+    client = attach(BridgeClient(make_config()), FakeIMAPClient(folders=DRAFTS_FOLDERS))
+    assert client.find_drafts_folder() == "Brouillons"
+
+
+def test_find_drafts_folder_fallback() -> None:
+    folders = [((b"\\HasNoChildren",), b"/", "INBOX")]
+    client = attach(BridgeClient(make_config()), FakeIMAPClient(folders=folders))
+    assert client.find_drafts_folder() == "Drafts"
+
+
+def test_append_to_drafts_uses_appenduid() -> None:
+    fake = FakeIMAPClient(folders=DRAFTS_FOLDERS)
+    fake.append_response = b"[APPENDUID 115958431 42] APPEND"
+    client = attach(BridgeClient(make_config()), fake)
+    uid = client.append_to_drafts(b"raw message")
+    assert uid == 42
+    folder, raw, flags, _ = fake.appended[0]
+    assert folder == "Brouillons"
+    assert raw == b"raw message"
+    assert "\\Draft" in flags
+
+
+def test_append_to_drafts_without_appenduid_raises() -> None:
+    fake = FakeIMAPClient(folders=DRAFTS_FOLDERS)
+    fake.append_response = b"APPEND"
+    client = attach(BridgeClient(make_config()), fake)
+    with pytest.raises(MailboxError, match="APPENDUID"):
+        client.append_to_drafts(b"x")
+
+
+def test_delete_draft_targets_only_requested_uid() -> None:
+    fake = FakeIMAPClient(folders=DRAFTS_FOLDERS, fetch_results={5: {b"FLAGS": ()}})
+    client = attach(BridgeClient(make_config()), fake)
+    client.delete_draft(5)
+    assert fake.selected == ("Brouillons", False)
+    assert fake.added_flags == [([5], ["\\Deleted"])]
+    assert fake.expunged == [[5]]
+
+
+def test_delete_draft_missing_uid_raises() -> None:
+    fake = FakeIMAPClient(folders=DRAFTS_FOLDERS)
+    client = attach(BridgeClient(make_config()), fake)
+    with pytest.raises(MessageNotFoundError):
+        client.delete_draft(99)
+
+
+def test_replace_draft_appends_then_deletes_old() -> None:
+    fake = FakeIMAPClient(folders=DRAFTS_FOLDERS, fetch_results={5: {b"FLAGS": ()}})
+    fake.append_response = b"[APPENDUID 1 7] APPEND"
+    client = attach(BridgeClient(make_config()), fake)
+    new_uid = client.replace_draft(5, b"raw")
+    assert new_uid == 7
+    assert fake.appended[0][0] == "Brouillons"
+    assert fake.added_flags == [([5], ["\\Deleted"])]
+    assert fake.expunged == [[5]]
+
+
+def test_get_draft_returns_content() -> None:
+    fake = FakeIMAPClient(
+        folders=DRAFTS_FOLDERS,
+        fetch_results={
+            5: {
+                b"FLAGS": (),
+                b"RFC822.SIZE": 10,
+                b"BODY[]": HEADER + b"Corps du brouillon.\n",
+            }
+        },
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    draft = client.get_draft(5)
+    assert draft.uid == 5
+    assert draft.folder == "Brouillons"
+    assert "Corps du brouillon." in draft.body_text
+
+
+def test_list_drafts_uses_drafts_folder() -> None:
+    fake = FakeIMAPClient(
+        folders=DRAFTS_FOLDERS,
+        search_results=[1],
+        fetch_results={
+            1: {b"FLAGS": (b"\\Draft",), b"RFC822.SIZE": 10, b"RFC822.HEADER": HEADER}
+        },
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    drafts = client.list_drafts()
+    assert [draft.uid for draft in drafts] == [1]
+    assert fake.selected == ("Brouillons", True)

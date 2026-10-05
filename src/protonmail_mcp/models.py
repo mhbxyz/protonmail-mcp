@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -36,3 +38,22 @@ class EmailContent(EmailSummary):
     body_text: str = ""
     truncated: bool = False
     attachments: list[Attachment] = Field(default_factory=list)
+
+
+class DraftCreated(BaseModel):
+    uid: int
+    message_id: str
+    folder: str
+    subject: str = ""
+
+
+class DraftDeleted(BaseModel):
+    uid: int
+    message_id: str
+
+
+class PreparedAction(BaseModel):
+    token: str
+    action: str
+    expires_in: float
+    preview: dict[str, Any]

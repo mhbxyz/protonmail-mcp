@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 import ssl
 import threading
 from collections.abc import Callable, Sequence
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, TypeVar
 
 from imapclient import IMAPClient
@@ -21,6 +22,7 @@ from .parsing import full_from_message, summary_from_header
 T = TypeVar("T")
 
 _RETRYABLE_ERRORS = (IMAPClientAbortError, ProtocolError, OSError)
+_APPENDUID = re.compile(rb"APPENDUID\s+\d+\s+(\d+)")
 
 
 class MailboxError(RuntimeError):
@@ -100,6 +102,87 @@ class BridgeClient:
             )
 
         return self._run(operation)
+
+    def find_drafts_folder(self) -> str:
+        for folder in self.list_folders():
+            if "\\Drafts" in folder.flags:
+                return folder.name
+        return "Drafts"
+
+    def list_drafts(self, limit: int = 20) -> list[EmailSummary]:
+        return self.list_emails(folder=self.find_drafts_folder(), limit=limit)
+
+    def get_draft(self, uid: int, max_chars: int = 20000) -> EmailContent:
+        folder = self.find_drafts_folder()
+
+        def operation(client: IMAPClient) -> EmailContent:
+            client.select_folder(folder, readonly=True)
+            response = client.fetch([uid], ["FLAGS", "RFC822.SIZE", "BODY.PEEK[]", "INTERNALDATE"])
+            item = response.get(uid)
+            if not item:
+                raise MessageNotFoundError(f"Draft UID {uid} not found in {folder!r}")
+            return full_from_message(
+                _as_bytes(item.get(b"BODY[]")),
+                uid=uid,
+                folder=folder,
+                flags=self._flags(item),
+                size=int(item.get(b"RFC822.SIZE") or 0),
+                max_chars=max_chars,
+                received=_internaldate(item),
+            )
+
+        return self._run(operation)
+
+    def append_to_drafts(self, raw: bytes) -> int:
+        folder = self.find_drafts_folder()
+
+        def operation(client: IMAPClient) -> int:
+            response = client.append(
+                folder, raw, flags=[r"\Draft"], msg_time=datetime.now(UTC)
+            )
+            uid = _append_uid(response)
+            if uid is None:
+                raise MailboxError("Bridge did not return an APPENDUID for the new draft")
+            return uid
+
+        return self._run(operation)
+
+    def replace_draft(self, uid: int, raw: bytes) -> int:
+        folder = self.find_drafts_folder()
+
+        def operation(client: IMAPClient) -> int:
+            try:
+                client.select_folder(folder)
+                if uid not in client.fetch([uid], ["FLAGS"]):
+                    raise MessageNotFoundError(f"Draft UID {uid} not found in {folder!r}")
+                response = client.append(
+                    folder, raw, flags=[r"\Draft"], msg_time=datetime.now(UTC)
+                )
+                new_uid = _append_uid(response)
+                if new_uid is None:
+                    raise MailboxError("Bridge did not return an APPENDUID for the replacement draft")
+                client.add_flags([uid], [r"\Deleted"])
+                client.expunge([uid])
+                return new_uid
+            except (IMAPClientError, *_RETRYABLE_ERRORS) as exc:
+                raise MailboxError(f"replacing draft {uid} failed: {exc}") from exc
+
+        return self._run(operation)
+
+    def delete_draft(self, uid: int) -> None:
+        folder = self.find_drafts_folder()
+
+        def operation(client: IMAPClient) -> None:
+            try:
+                client.select_folder(folder)
+                if uid not in client.fetch([uid], ["FLAGS"]):
+                    raise MessageNotFoundError(f"Draft UID {uid} not found in {folder!r}")
+                client.add_flags([uid], [r"\Deleted"])
+                client.expunge([uid])
+            except (IMAPClientError, *_RETRYABLE_ERRORS) as exc:
+                raise MailboxError(f"deleting draft {uid} failed: {exc}") from exc
+
+        self._run(operation)
 
     @staticmethod
     def _list_criteria(
@@ -224,3 +307,16 @@ def _as_bytes(value: Any) -> bytes:
     if isinstance(value, str):
         return value.encode()
     return b""
+
+
+def _append_uid(response: Any) -> int | None:
+    if isinstance(response, (bytes, bytearray)):
+        raw = bytes(response)
+    elif isinstance(response, str):
+        raw = response.encode()
+    elif isinstance(response, (list, tuple)):
+        raw = b"".join(_as_bytes(part) for part in response)
+    else:
+        raw = b""
+    match = _APPENDUID.search(raw)
+    return int(match.group(1)) if match else None
