@@ -12,7 +12,16 @@ from mcp.types import ToolAnnotations
 
 from .audit import AuditLog
 from .bridge import BridgeClient, MailboxError, MessageNotFoundError
-from .compose import ComposeError, build_draft, validate_recipients
+from .compose import (
+    ComposeError,
+    build_draft,
+    build_forward,
+    build_reply,
+    forward_subject,
+    reply_recipients,
+    reply_subject,
+    validate_recipients,
+)
 from .config import BridgeConfig, ConfigError
 from .confirmations import ConfirmationError, ConfirmationManager, PreparedConfirmation
 from .models import (
@@ -29,7 +38,7 @@ READ_ONLY = ToolAnnotations(read_only_hint=True)
 WRITE_DRAFT = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=False
 )
-REPLACE_DRAFT = ToolAnnotations(
+DESTRUCTIVE_WRITE = ToolAnnotations(
     read_only_hint=False, destructive_hint=True, idempotent_hint=False
 )
 
@@ -104,6 +113,26 @@ def _update_payload(uid: int, to: str, cc: str, bcc: str, subject: str, body: st
 
 def _delete_payload(uid: int) -> dict[str, Any]:
     return {"action": "delete_draft", "uid": uid}
+
+
+def _reply_payload(message_id: str, folder: str, body: str, reply_all: bool) -> dict[str, Any]:
+    return {
+        "action": "reply_draft",
+        "message_id": message_id,
+        "folder": folder,
+        "body": body,
+        "reply_all": reply_all,
+    }
+
+
+def _forward_payload(message_id: str, folder: str, to: str, body: str) -> dict[str, Any]:
+    return {
+        "action": "forward_draft",
+        "message_id": message_id,
+        "folder": folder,
+        "to": to,
+        "body": body,
+    }
 
 
 def _prepared_action(prepared: PreparedConfirmation) -> PreparedAction:
@@ -315,7 +344,7 @@ def build_server(policy: Policy) -> MCPServer:
             except (ConfigError, MailboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
-        @server.tool(annotations=REPLACE_DRAFT)
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
         @_audited("commit_update_draft")
         def commit_update_draft(
             token: str,
@@ -384,7 +413,7 @@ def build_server(policy: Policy) -> MCPServer:
             except (ConfigError, MailboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
-        @server.tool(annotations=REPLACE_DRAFT)
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
         @_audited("commit_delete_draft")
         def commit_delete_draft(token: str, uid: int) -> DraftDeleted:
             """Commit a prepared draft deletion. The token and uid must match
@@ -401,6 +430,169 @@ def build_server(policy: Policy) -> MCPServer:
                 client.delete_draft(uid)
                 return DraftDeleted(uid=uid, message_id=existing.message_id)
             except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=WRITE_DRAFT)
+        @_audited("prepare_reply_draft")
+        def prepare_reply_draft(
+            message_id: str,
+            folder: str = "INBOX",
+            body: str = "",
+            reply_all: bool = False,
+        ) -> PreparedAction:
+            """Prepare a reply draft to an existing message, with quoting and threading
+            headers. Nothing is saved until commit_reply_draft is called with the same
+            arguments and the returned token.
+
+            Args:
+                message_id: Message-ID of the message being replied to.
+                folder: Folder containing that message.
+                body: Optional reply text placed above the quoted original.
+                reply_all: Also add the original To/Cc recipients (self excluded).
+            """
+            try:
+                client = get_client()
+                original = client.get_message(message_id, folder=folder, max_chars=20000)
+                to, cc = reply_recipients(original, client.config.username, reply_all)
+                preview = {
+                    "target": {
+                        "message_id": original.message_id,
+                        "subject": original.subject,
+                        "sender": original.sender,
+                    },
+                    "reply": {
+                        "to": to,
+                        "cc": cc,
+                        "subject": reply_subject(original.subject),
+                        "body_preview": body[:200],
+                    },
+                }
+                return _prepared_action(
+                    CONFIRMATIONS.prepare(
+                        "reply_draft",
+                        _reply_payload(message_id, folder, body, reply_all),
+                        preview=preview,
+                    )
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
+        @_audited("commit_reply_draft")
+        def commit_reply_draft(
+            token: str,
+            message_id: str,
+            folder: str = "INBOX",
+            body: str = "",
+            reply_all: bool = False,
+        ) -> DraftCreated:
+            """Commit a prepared reply draft. The token and every argument must match
+            prepare_reply_draft.
+
+            Args:
+                token: Token returned by prepare_reply_draft.
+                message_id: Message-ID of the message being replied to.
+                folder: Folder containing that message.
+                body: Optional reply text placed above the quoted original.
+                reply_all: Also add the original To/Cc recipients (self excluded).
+            """
+            try:
+                CONFIRMATIONS.commit(token, _reply_payload(message_id, folder, body, reply_all))
+                client = get_client()
+                original = client.get_message(message_id, folder=folder, max_chars=20000)
+                composed = build_reply(
+                    original, client.config.username, body=body, reply_all=reply_all
+                )
+                uid = client.append_to_drafts(composed.raw)
+                return DraftCreated(
+                    uid=uid,
+                    message_id=composed.message_id,
+                    folder=client.find_drafts_folder(),
+                    subject=reply_subject(original.subject),
+                )
+            except (ConfigError, MailboxError, ComposeError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=WRITE_DRAFT)
+        @_audited("prepare_forward_draft")
+        def prepare_forward_draft(
+            message_id: str,
+            folder: str = "INBOX",
+            to: str = "",
+            body: str = "",
+        ) -> PreparedAction:
+            """Prepare a forward draft containing the original message. Nothing is saved
+            until commit_forward_draft is called with the same arguments and the returned
+            token. Original attachments are listed by name but not attached.
+
+            Args:
+                message_id: Message-ID of the message being forwarded.
+                folder: Folder containing that message.
+                to: Comma-separated recipients; may be empty.
+                body: Optional text placed above the forwarded block.
+            """
+            try:
+                client = get_client()
+                original = client.get_message(message_id, folder=folder, max_chars=20000)
+                preview = {
+                    "target": {
+                        "message_id": original.message_id,
+                        "subject": original.subject,
+                        "sender": original.sender,
+                    },
+                    "forward": {
+                        "to": validate_recipients(to, header="To"),
+                        "subject": forward_subject(original.subject),
+                        "body_preview": body[:200],
+                    },
+                }
+                return _prepared_action(
+                    CONFIRMATIONS.prepare(
+                        "forward_draft",
+                        _forward_payload(message_id, folder, to, body),
+                        preview=preview,
+                    )
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
+        @_audited("commit_forward_draft")
+        def commit_forward_draft(
+            token: str,
+            message_id: str,
+            folder: str = "INBOX",
+            to: str = "",
+            body: str = "",
+        ) -> DraftCreated:
+            """Commit a prepared forward draft. The token and every argument must match
+            prepare_forward_draft.
+
+            Args:
+                token: Token returned by prepare_forward_draft.
+                message_id: Message-ID of the message being forwarded.
+                folder: Folder containing that message.
+                to: Comma-separated recipients; may be empty.
+                body: Optional text placed above the forwarded block.
+            """
+            try:
+                CONFIRMATIONS.commit(token, _forward_payload(message_id, folder, to, body))
+                client = get_client()
+                original = client.get_message(message_id, folder=folder, max_chars=20000)
+                composed = build_forward(
+                    original,
+                    client.config.username,
+                    to=validate_recipients(to, header="To"),
+                    body=body,
+                )
+                uid = client.append_to_drafts(composed.raw)
+                return DraftCreated(
+                    uid=uid,
+                    message_id=composed.message_id,
+                    folder=client.find_drafts_folder(),
+                    subject=forward_subject(original.subject),
+                )
+            except (ConfigError, MailboxError, ComposeError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
     return server

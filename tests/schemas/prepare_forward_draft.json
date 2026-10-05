@@ -1,0 +1,28 @@
+{
+  "properties": {
+    "body": {
+      "default": "",
+      "title": "Body",
+      "type": "string"
+    },
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "to": {
+      "default": "",
+      "title": "To",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id"
+  ],
+  "title": "prepare_forward_draftArguments",
+  "type": "object"
+}

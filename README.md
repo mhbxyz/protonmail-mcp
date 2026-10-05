@@ -34,9 +34,9 @@ are on the [roadmap](ROADMAP.md), each gated behind the controls described in
 
 When the `draft` capability is enabled (see [Capability policy](#capability-policy)),
 additional tools are registered: `list_drafts`, `create_draft`, and `prepare_*`/`commit_*`
-pairs for updating and deleting drafts. Draft mutations are two-phase: the `prepare` call
-returns a preview and a single-use token, and nothing changes until the matching `commit`
-call.
+pairs for replying, forwarding, updating, and deleting drafts. Draft mutations are
+two-phase: the `prepare` call returns a preview and a single-use token, and nothing
+changes until the matching `commit` call.
 
 Results are structured (Pydantic models). Every message carries its `Message-ID`; use
 that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronisations.

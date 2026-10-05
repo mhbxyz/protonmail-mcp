@@ -246,6 +246,7 @@ def full_from_message(
         size_bytes=size,
         cc=address_header(message, "Cc"),
         reply_to=address_header(message, "Reply-To"),
+        references=header_value(message, "References"),
         body_text=body,
         truncated=truncated,
         attachments=extract_attachments(message),

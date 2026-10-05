@@ -22,6 +22,10 @@ DRAFT_TOOLS = {
     "commit_update_draft",
     "prepare_delete_draft",
     "commit_delete_draft",
+    "prepare_reply_draft",
+    "commit_reply_draft",
+    "prepare_forward_draft",
+    "commit_forward_draft",
 }
 
 HEADER = b"From: a@b.c\nTo: d@e.f\nSubject: x\nMessage-ID: <h@x>\n\n"

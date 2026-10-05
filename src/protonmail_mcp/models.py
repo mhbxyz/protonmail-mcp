@@ -35,6 +35,7 @@ class Attachment(BaseModel):
 class EmailContent(EmailSummary):
     cc: str = ""
     reply_to: str = ""
+    references: str = ""
     body_text: str = ""
     truncated: bool = False
     attachments: list[Attachment] = Field(default_factory=list)

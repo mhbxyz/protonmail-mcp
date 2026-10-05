@@ -37,8 +37,16 @@ class FakeMailbox:
     def search_emails(self, query: str, folder: str = "INBOX", limit: int = 20) -> list[EmailSummary]:
         return []
 
-    def get_message(self, message_id: str, folder: str = "INBOX", max_chars: int = 20000) -> Any:
-        raise MailboxError(f"unknown {message_id}")
+    def get_message(self, message_id: str, folder: str = "INBOX", max_chars: int = 20000) -> EmailContent:
+        return EmailContent(
+            message_id=message_id,
+            folder=folder,
+            uid=1,
+            subject="Hello",
+            sender="Alice <alice@example.com>",
+            recipients="bob@example.com",
+            body_text="Original body",
+        )
 
     def close(self) -> None:
         pass
@@ -286,3 +294,72 @@ def test_update_draft_requires_matching_token() -> None:
     assert committed.is_error in (False, None)
     assert mailbox.replaced == [5]
     assert tool_payload(committed)["uid"] == 43
+
+
+def test_reply_draft_flow() -> None:
+    built = draft_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        prepared = tool_payload(
+            call_built(built, "prepare_reply_draft", {"message_id": "<m@x>", "body": "Merci"})
+        )
+        assert prepared["preview"]["reply"]["to"] == "Alice <alice@example.com>"
+        assert prepared["preview"]["reply"]["subject"] == "Re: Hello"
+
+        mismatched = call_built(
+            built,
+            "commit_reply_draft",
+            {"token": prepared["token"], "message_id": "<m@x>", "body": "Tampered"},
+        )
+        assert mismatched.is_error is True
+        assert mailbox.created == []
+
+        fresh = tool_payload(
+            call_built(built, "prepare_reply_draft", {"message_id": "<m@x>", "body": "Merci"})
+        )["token"]
+        committed = call_built(
+            built,
+            "commit_reply_draft",
+            {"token": fresh, "message_id": "<m@x>", "body": "Merci"},
+        )
+    finally:
+        cleanup()
+    assert committed.is_error in (False, None)
+    assert len(mailbox.created) == 1
+    assert b"Re: Hello" in mailbox.created[0]
+
+
+def test_forward_draft_flow() -> None:
+    built = draft_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        invalid = call_built(
+            built,
+            "prepare_forward_draft",
+            {"message_id": "<m@x>", "to": "not-an-email"},
+        )
+        assert invalid.is_error is True
+
+        prepared = tool_payload(
+            call_built(
+                built,
+                "prepare_forward_draft",
+                {"message_id": "<m@x>", "to": "friend@example.com"},
+            )
+        )
+        committed = call_built(
+            built,
+            "commit_forward_draft",
+            {
+                "token": prepared["token"],
+                "message_id": "<m@x>",
+                "to": "friend@example.com",
+            },
+        )
+    finally:
+        cleanup()
+    assert committed.is_error in (False, None)
+    assert len(mailbox.created) == 1
+    assert b"Fwd: Hello" in mailbox.created[0]

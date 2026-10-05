@@ -1,0 +1,28 @@
+{
+  "properties": {
+    "body": {
+      "default": "",
+      "title": "Body",
+      "type": "string"
+    },
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "reply_all": {
+      "default": false,
+      "title": "Reply All",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "message_id"
+  ],
+  "title": "prepare_reply_draftArguments",
+  "type": "object"
+}
