@@ -59,6 +59,15 @@ Content-Type: text/html; charset=utf-8
 </body></html>
 """
 
+ENCODED_EML = b"""From: =?utf-8?q?CIC_=C3=89pargne_Salariale?= <notif@example.fr>
+To: Jean Dupont <jean@proton.me>
+Subject: Test encodage
+Date: Mon, 05 Oct 2026 12:00:00 +0200
+Message-ID: <enc@example.fr>
+
+Corps.
+"""
+
 
 def test_full_from_simple_message() -> None:
     email = full_from_message(SIMPLE_EML, uid=1, folder="INBOX", flags=[], size=len(SIMPLE_EML), max_chars=20000)
@@ -107,12 +116,26 @@ def test_truncation() -> None:
     assert email.truncated is True
 
 
+def test_encoded_display_names_are_decoded() -> None:
+    email = full_from_message(ENCODED_EML, uid=1, folder="INBOX", flags=[], size=1, max_chars=100)
+    assert email.sender == "CIC Épargne Salariale <notif@example.fr>"
+    assert email.recipients == "Jean Dupont <jean@proton.me>"
+
+
 def test_summary_from_header() -> None:
-    summary = summary_from_header(SIMPLE_EML, uid=3, folder="INBOX", flags=[], size=42)
+    summary = summary_from_header(
+        SIMPLE_EML,
+        uid=3,
+        folder="INBOX",
+        flags=[],
+        size=42,
+        received="2026-10-03 10:00:00",
+    )
     assert summary.message_id == "<abc123@example.com>"
     assert summary.subject == "Rapport mensuel"
     assert summary.unread is True
     assert summary.size_bytes == 42
+    assert summary.received == "2026-10-03 10:00:00"
 
 
 def test_helpers() -> None:

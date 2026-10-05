@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from email import message_from_bytes
+from email.header import decode_header
 from email.message import Message
 from email.policy import default as default_policy
 from email.utils import formataddr, getaddresses
@@ -36,6 +37,7 @@ _BLOCK_TAGS = {
 _SKIP_TAGS = {"script", "style", "head", "title"}
 _BLANK_LINES = re.compile(r"\n{3,}")
 _TRAILING_SPACES = re.compile(r"[ \t]+\n")
+_PHRASE_SPECIALS = re.compile(r'[()<>@,;:\\".\[\]]')
 
 
 class _HtmlToText(HTMLParser):
@@ -82,6 +84,47 @@ def format_addresses(value: str | None) -> str:
     if not value:
         return ""
     return ", ".join(formataddr(pair) for pair in getaddresses([value]) if pair[0] or pair[1])
+
+
+def _decode_words(value: str) -> str:
+    parts: list[str] = []
+    for chunk, charset in decode_header(value):
+        if isinstance(chunk, bytes):
+            try:
+                parts.append(chunk.decode(charset or "utf-8", errors="replace"))
+            except LookupError:
+                parts.append(chunk.decode("utf-8", errors="replace"))
+        else:
+            parts.append(chunk)
+    return "".join(parts)
+
+
+def _format_address(display_name: str, addr_spec: str) -> str:
+    display_name = display_name.strip()
+    if not addr_spec:
+        return display_name
+    if not display_name:
+        return addr_spec
+    if _PHRASE_SPECIALS.search(display_name):
+        escaped = display_name.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}" <{addr_spec}>'
+    return f"{display_name} <{addr_spec}>"
+
+
+def address_header(message: Message, name: str) -> str:
+    header = message.get(name)
+    if header is None:
+        return ""
+    addresses = getattr(header, "addresses", None)
+    if addresses is None:
+        return format_addresses(str(header))
+    formatted = []
+    for address in addresses:
+        display_name = _decode_words(str(address.display_name)) if address.display_name else ""
+        entry = _format_address(display_name, str(address.addr_spec))
+        if entry:
+            formatted.append(entry)
+    return ", ".join(formatted)
 
 
 def _is_attachment(part: Message) -> bool:
@@ -157,6 +200,7 @@ def summary_from_header(
     folder: str,
     flags: Sequence[str],
     size: int,
+    received: str = "",
 ) -> EmailSummary:
     message = message_from_bytes(raw_header, policy=default_policy)
     return EmailSummary(
@@ -164,9 +208,10 @@ def summary_from_header(
         folder=folder,
         uid=uid,
         subject=header_value(message, "Subject"),
-        sender=format_addresses(header_value(message, "From")),
-        recipients=format_addresses(header_value(message, "To")),
+        sender=address_header(message, "From"),
+        recipients=address_header(message, "To"),
         date=header_value(message, "Date"),
+        received=received,
         unread="\\Seen" not in flags,
         flagged="\\Flagged" in flags,
         size_bytes=size,
@@ -181,6 +226,7 @@ def full_from_message(
     flags: Sequence[str],
     size: int,
     max_chars: int,
+    received: str = "",
 ) -> EmailContent:
     message = message_from_bytes(raw, policy=default_policy)
     body, truncated = truncate(extract_body(message), max_chars)
@@ -189,14 +235,15 @@ def full_from_message(
         folder=folder,
         uid=uid,
         subject=header_value(message, "Subject"),
-        sender=format_addresses(header_value(message, "From")),
-        recipients=format_addresses(header_value(message, "To")),
+        sender=address_header(message, "From"),
+        recipients=address_header(message, "To"),
         date=header_value(message, "Date"),
+        received=received,
         unread="\\Seen" not in flags,
         flagged="\\Flagged" in flags,
         size_bytes=size,
-        cc=format_addresses(header_value(message, "Cc")),
-        reply_to=format_addresses(header_value(message, "Reply-To")),
+        cc=address_header(message, "Cc"),
+        reply_to=address_header(message, "Reply-To"),
         body_text=body,
         truncated=truncated,
         attachments=extract_attachments(message),

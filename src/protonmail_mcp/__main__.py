@@ -46,7 +46,7 @@ def run_check() -> int:
     print(f"Latest INBOX messages ({len(recent)}):")
     for email in recent:
         state = "unread" if email.unread else "read"
-        print(f"  - [{state}] {email.date} | {email.sender} | {email.subject}")
+        print(f"  - [{state}] {email.received or email.date} | {email.sender} | {email.subject}")
     return 0
 
 

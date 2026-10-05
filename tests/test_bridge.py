@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -86,16 +86,39 @@ def test_list_emails_uses_readonly_and_newest_first() -> None:
     fake = FakeIMAPClient(
         search_results=[1, 2, 3],
         fetch_results={
-            3: {b"FLAGS": (b"\\Seen",), b"RFC822.SIZE": 100, b"RFC822.HEADER": HEADER},
-            2: {b"FLAGS": (), b"RFC822.SIZE": 50, b"RFC822.HEADER": HEADER},
+            1: {
+                b"FLAGS": (b"\\Seen",),
+                b"RFC822.SIZE": 100,
+                b"RFC822.HEADER": HEADER,
+                b"INTERNALDATE": datetime(2026, 10, 5, 9, 0),
+            },
+            2: {
+                b"FLAGS": (),
+                b"RFC822.SIZE": 50,
+                b"RFC822.HEADER": HEADER,
+                b"INTERNALDATE": datetime(2026, 10, 4, 9, 0),
+            },
         },
     )
     client = attach(BridgeClient(make_config()), fake)
     emails = client.list_emails(limit=2)
-    assert [email.uid for email in emails] == [3, 2]
+    assert [email.uid for email in emails] == [1, 2]
     assert fake.selected == ("INBOX", True)
     assert emails[0].unread is False
     assert emails[1].unread is True
+    assert emails[0].received == "2026-10-05 09:00:00"
+
+
+def test_list_emails_sorts_by_receive_date() -> None:
+    fake = FakeIMAPClient(
+        search_results=[1, 2],
+        fetch_results={
+            1: {b"RFC822.HEADER": HEADER, b"INTERNALDATE": datetime(2026, 10, 1, 9, 0)},
+            2: {b"RFC822.HEADER": HEADER, b"INTERNALDATE": datetime(2026, 10, 3, 9, 0)},
+        },
+    )
+    emails = attach(BridgeClient(make_config()), fake).list_emails(limit=2)
+    assert [email.uid for email in emails] == [2, 1]
 
 
 def test_list_criteria() -> None:

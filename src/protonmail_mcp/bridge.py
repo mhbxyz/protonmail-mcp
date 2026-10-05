@@ -3,7 +3,7 @@ from __future__ import annotations
 import ssl
 import threading
 from collections.abc import Callable, Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, TypeVar
 
 from imapclient import IMAPClient
@@ -84,7 +84,7 @@ class BridgeClient:
                     f"No message with Message-ID {message_id!r} in folder {folder!r}"
                 )
             uid = max(uids)
-            response = client.fetch([uid], ["FLAGS", "RFC822.SIZE", "BODY.PEEK[]"])
+            response = client.fetch([uid], ["FLAGS", "RFC822.SIZE", "BODY.PEEK[]", "INTERNALDATE"])
             item = response.get(uid)
             if not item:
                 raise MessageNotFoundError(f"Message {message_id!r} vanished while fetching")
@@ -96,6 +96,7 @@ class BridgeClient:
                 flags=self._flags(item),
                 size=int(item.get(b"RFC822.SIZE") or 0),
                 max_chars=max_chars,
+                received=_internaldate(item),
             )
 
         return self._run(operation)
@@ -125,10 +126,10 @@ class BridgeClient:
     ) -> list[EmailSummary]:
         client.select_folder(folder, readonly=True)
         uids = client.search(criteria)
-        selected = uids[-limit:][::-1]
+        selected = uids[:limit]
         if not selected:
             return []
-        response = client.fetch(selected, ["FLAGS", "RFC822.SIZE", "RFC822.HEADER"])
+        response = client.fetch(selected, ["FLAGS", "RFC822.SIZE", "RFC822.HEADER", "INTERNALDATE"])
         summaries: list[EmailSummary] = []
         for uid in selected:
             item = response.get(uid)
@@ -141,8 +142,10 @@ class BridgeClient:
                     folder=folder,
                     flags=self._flags(item),
                     size=int(item.get(b"RFC822.SIZE") or 0),
+                    received=_internaldate(item),
                 )
             )
+        summaries.sort(key=lambda summary: summary.received, reverse=True)
         return summaries
 
     @staticmethod
@@ -206,6 +209,13 @@ def _decode(value: bytes | str | None) -> str:
     if value is None:
         return ""
     return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _internaldate(item: dict[Any, Any]) -> str:
+    value = item.get(b"INTERNALDATE")
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    return str(value) if value else ""
 
 
 def _as_bytes(value: Any) -> bytes:

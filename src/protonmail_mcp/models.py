@@ -18,6 +18,7 @@ class EmailSummary(BaseModel):
     sender: str = ""
     recipients: str = ""
     date: str = ""
+    received: str = ""
     unread: bool = True
     flagged: bool = False
     size_bytes: int = 0

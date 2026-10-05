@@ -84,7 +84,7 @@ Pour Claude Desktop ou un autre client, même principe : commande `protonmail-mc
 | Outil | Description |
 |---|---|
 | `list_folders` | Liste les dossiers/labels, avec leur caractère sélectionnable |
-| `list_emails` | Derniers messages d'un dossier : `limit`, `unread_only`, `since_days`, `sender`, `subject` |
+| `list_emails` | Derniers messages reçus d'un dossier (triés par date de réception) : `limit`, `unread_only`, `since_days`, `sender`, `subject` |
 | `search_emails` | Recherche plein texte (en-têtes + corps) dans un dossier |
 | `read_email` | Lit un message complet par `Message-ID` (corps texte, pièces jointes, flags, troncature via `max_chars`) |
 
