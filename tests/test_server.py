@@ -835,6 +835,19 @@ def test_get_thread_tool() -> None:
     assert "Root" in result.content[0].text
 
 
+def test_get_smtp_sender_uses_client_config() -> None:
+    from protonmail_mcp import server as server_module
+
+    set_client(FakeMailbox())
+    try:
+        sender = server_module.get_smtp_sender()
+        assert sender is not None
+        assert server_module.get_smtp_sender() is sender
+    finally:
+        set_client(None)
+        server_module.set_smtp_sender(None)
+
+
 def send_server(tmp_path: Path, **overrides: Any) -> Any:
     send_policy = SendPolicy(state_path=str(tmp_path / "state.db"), **overrides)
     policy = Policy(

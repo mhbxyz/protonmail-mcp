@@ -80,12 +80,13 @@ _client: BridgeClient | None = None
 
 AUDIT = AuditLog.from_env()
 
+_smtp_lock = threading.Lock()
 _smtp_sender: SmtpSender | None = None
 
 
 def get_smtp_sender() -> SmtpSender:
     global _smtp_sender
-    with _client_lock:
+    with _smtp_lock:
         if _smtp_sender is None:
             _smtp_sender = SmtpSender(get_client().config)
         return _smtp_sender
@@ -93,7 +94,7 @@ def get_smtp_sender() -> SmtpSender:
 
 def set_smtp_sender(sender: SmtpSender | None) -> None:
     global _smtp_sender
-    with _client_lock:
+    with _smtp_lock:
         _smtp_sender = sender
 
 
