@@ -52,6 +52,20 @@ class FilesPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class SendPolicy:
+    allow_self: bool = True
+    allowed_recipients: tuple[str, ...] = ()
+    allowed_domains: tuple[str, ...] = ()
+    max_recipients: int = 10
+    max_per_hour: int = 20
+    max_per_day: int = 100
+    duplicate_window_seconds: int = 600
+    max_thread_depth: int = 10
+    max_message_bytes: int = 25 * 1024 * 1024
+    state_path: str = "~/.local/state/protonmail-mcp/state.db"
+
+
+@dataclass(frozen=True, slots=True)
 class OrganizePolicy:
     max_bulk: int = 50
     protect_drafts: bool = True
@@ -68,6 +82,7 @@ class Policy:
     idempotency_window_seconds: int = DEFAULT_IDEMPOTENCY_WINDOW_SECONDS
     organize: OrganizePolicy = OrganizePolicy()
     files: FilesPolicy = FilesPolicy()
+    send: SendPolicy = SendPolicy()
 
 
 def effective_mode(capabilities: Capabilities) -> str:
@@ -161,6 +176,32 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
         raise PolicyError("policy.toml: files.max_bytes must be a positive integer")
 
+    send_table = _table(data, "send")
+
+    def send_int(name: str, default: int, *, minimum: int) -> int:
+        value = send_table.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise PolicyError(
+                f"policy.toml: send.{name} must be an integer >= {minimum}"
+            )
+        return value
+
+    allow_self = send_table.get("allow_self", True)
+    if not isinstance(allow_self, bool):
+        raise PolicyError("policy.toml: send.allow_self must be a boolean")
+    recipients = send_table.get("allowed_recipients", [])
+    domains = send_table.get("allowed_domains", [])
+    for name, value in (("allowed_recipients", recipients), ("allowed_domains", domains)):
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item for item in value
+        ):
+            raise PolicyError(
+                f"policy.toml: send.{name} must be a list of non-empty strings"
+            )
+    state_path = send_table.get("state_path", SendPolicy().state_path)
+    if not isinstance(state_path, str) or not state_path.strip():
+        raise PolicyError("policy.toml: send.state_path must be a non-empty string")
+
     return Policy(
         mode=mode,
         capabilities=Capabilities(**flags),
@@ -174,4 +215,22 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
             label_allowlist=tuple(labels),
         ),
         files=FilesPolicy(directory=directory, max_bytes=max_bytes),
+        send=SendPolicy(
+            allow_self=allow_self,
+            allowed_recipients=tuple(recipients),
+            allowed_domains=tuple(domains),
+            max_recipients=send_int("max_recipients", SendPolicy().max_recipients, minimum=1),
+            max_per_hour=send_int("max_per_hour", SendPolicy().max_per_hour, minimum=0),
+            max_per_day=send_int("max_per_day", SendPolicy().max_per_day, minimum=0),
+            duplicate_window_seconds=send_int(
+                "duplicate_window_seconds", SendPolicy().duplicate_window_seconds, minimum=0
+            ),
+            max_thread_depth=send_int(
+                "max_thread_depth", SendPolicy().max_thread_depth, minimum=1
+            ),
+            max_message_bytes=send_int(
+                "max_message_bytes", SendPolicy().max_message_bytes, minimum=1
+            ),
+            state_path=state_path,
+        ),
     )

@@ -35,6 +35,8 @@ jobs:
           --cov=protonmail_mcp.idempotency
           --cov=protonmail_mcp.journal
           --cov=protonmail_mcp.files
+          --cov=protonmail_mcp.send
+          --cov=protonmail_mcp.state
           --cov=protonmail_mcp.bridge
           --cov=protonmail_mcp.parsing
           --cov-fail-under=88

@@ -120,6 +120,12 @@ protect_drafts = true
 [files]
 directory = "~/.local/share/protonmail-mcp/files"
 max_bytes = 26214400
+
+[send]
+allow_self = true
+max_per_hour = 20
+max_per_day = 100
+state_path = "~/.local/state/protonmail-mcp/state.db"
 ```
 
 See [SECURITY.md](SECURITY.md) for the confirmation flow and [ROADMAP.md](ROADMAP.md) for

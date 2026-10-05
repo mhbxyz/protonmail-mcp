@@ -170,6 +170,52 @@ def test_invalid_files_values(tmp_path: Path) -> None:
         load_policy(env=env_for(tmp_path))
 
 
+def test_send_defaults(tmp_path: Path) -> None:
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.send.allow_self is True
+    assert policy.send.allowed_recipients == ()
+    assert policy.send.allowed_domains == ()
+    assert policy.send.max_recipients == 10
+    assert policy.send.max_per_hour == 20
+    assert policy.send.max_per_day == 100
+    assert policy.send.duplicate_window_seconds == 600
+    assert policy.send.state_path == "~/.local/state/protonmail-mcp/state.db"
+
+
+def test_send_overrides(tmp_path: Path) -> None:
+    write_policy(
+        tmp_path,
+        "[send]\n"
+        "allow_self = false\n"
+        'allowed_recipients = ["a@b.c"]\n'
+        'allowed_domains = ["example.com"]\n'
+        "max_recipients = 3\n"
+        "max_per_hour = 0\n"
+        "max_per_day = 2\n",
+    )
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.send.allow_self is False
+    assert policy.send.allowed_recipients == ("a@b.c",)
+    assert policy.send.allowed_domains == ("example.com",)
+    assert policy.send.max_recipients == 3
+    assert policy.send.max_per_hour == 0
+    assert policy.send.max_per_day == 2
+
+
+def test_invalid_send_values(tmp_path: Path) -> None:
+    cases = [
+        ('[send]\nallow_self = "yes"\n', "allow_self"),
+        ("[send]\nmax_recipients = 0\n", "max_recipients"),
+        ("[send]\nallowed_domains = [1]\n", "allowed_domains"),
+        ('[send]\nstate_path = ""\n', "state_path"),
+        ("[send]\nmax_message_bytes = 0\n", "max_message_bytes"),
+    ]
+    for text, match in cases:
+        write_policy(tmp_path, text)
+        with pytest.raises(PolicyError, match=match):
+            load_policy(env=env_for(tmp_path))
+
+
 def test_effective_mode_for_presets_and_custom() -> None:
     assert effective_mode(Capabilities()) == "read"
     assert effective_mode(Capabilities(draft=True)) == "draft"

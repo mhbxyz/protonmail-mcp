@@ -31,3 +31,15 @@ protect_drafts = true
 [files]
 directory = "~/.local/share/protonmail-mcp/files"
 max_bytes = 26214400
+
+[send]
+allow_self = true
+# allowed_recipients = ["collegue@example.com"]   # exact addresses
+# allowed_domains = ["example.com"]               # exact domains
+max_recipients = 10
+max_per_hour = 20
+max_per_day = 100
+duplicate_window_seconds = 600
+max_thread_depth = 10
+max_message_bytes = 26214400
+state_path = "~/.local/state/protonmail-mcp/state.db"
