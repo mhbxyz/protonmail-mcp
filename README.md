@@ -17,8 +17,9 @@ This server wraps that local IMAP endpoint in a small, auditable set of MCP tool
 
 The current release is **read-only**: it can list folders, list messages, search, and
 read a message. Mailboxes are opened with IMAP `SELECT ... READONLY`, so nothing is
-ever modified — not even the `\Seen` flag. Write tools are on the roadmap, behind
-mandatory confirmation (see [Security](#security)).
+ever modified — not even the `\Seen` flag. Write tools (drafts, organize, send, delete)
+are on the [roadmap](ROADMAP.md), each gated behind the controls described in
+[SECURITY.md](SECURITY.md).
 
 ## Tools
 
