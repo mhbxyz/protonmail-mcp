@@ -50,6 +50,11 @@ path = "~/.local/state/protonmail-mcp/index.db"
 # excluded_folders = ["Spam"]
 max_body_chars = 10000
 
+[notifications]
+enabled = false
+folder = "INBOX"
+min_interval_seconds = 30
+
 # Multiple accounts: one Bridge instance per account, one MCP process per profile.
 # Select with --profile or PROTONMAIL_MCP_PROFILE; passwords come from the named
 # environment variables.

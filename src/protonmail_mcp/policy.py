@@ -74,6 +74,13 @@ class IndexPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class NotificationsPolicy:
+    enabled: bool = False
+    folder: str = "INBOX"
+    min_interval_seconds: int = 30
+
+
+@dataclass(frozen=True, slots=True)
 class ProfilePolicy:
     name: str
     username: str
@@ -103,6 +110,7 @@ class Policy:
     files: FilesPolicy = FilesPolicy()
     send: SendPolicy = SendPolicy()
     index: IndexPolicy = IndexPolicy()
+    notifications: NotificationsPolicy = NotificationsPolicy()
     profile_name: str = "default"
     profiles: dict[str, ProfilePolicy] = field(default_factory=dict)
 
@@ -331,6 +339,25 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
     ):
         raise PolicyError("policy.toml: index.max_body_chars must be a positive integer")
 
+    notifications_table = _table(data, "notifications")
+    notifications_enabled = notifications_table.get("enabled", False)
+    if not isinstance(notifications_enabled, bool):
+        raise PolicyError("policy.toml: notifications.enabled must be a boolean")
+    notifications_folder = notifications_table.get("folder", NotificationsPolicy().folder)
+    if not isinstance(notifications_folder, str) or not notifications_folder.strip():
+        raise PolicyError("policy.toml: notifications.folder must be a non-empty string")
+    min_interval = notifications_table.get(
+        "min_interval_seconds", NotificationsPolicy().min_interval_seconds
+    )
+    if (
+        isinstance(min_interval, bool)
+        or not isinstance(min_interval, int)
+        or min_interval < 0
+    ):
+        raise PolicyError(
+            "policy.toml: notifications.min_interval_seconds must be a non-negative integer"
+        )
+
     return Policy(
         mode=mode,
         capabilities=Capabilities(**flags),
@@ -367,6 +394,11 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
             path=index_path,
             excluded_folders=tuple(excluded),
             max_body_chars=max_body_chars,
+        ),
+        notifications=NotificationsPolicy(
+            enabled=notifications_enabled,
+            folder=notifications_folder.strip(),
+            min_interval_seconds=min_interval,
         ),
         profile_name=profile_name,
         profiles=profiles,

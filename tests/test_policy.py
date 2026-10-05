@@ -336,6 +336,36 @@ def test_invalid_profiles(tmp_path: Path) -> None:
             load_policy(env=env_for(tmp_path))
 
 
+def test_notifications_defaults(tmp_path: Path) -> None:
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.notifications.enabled is False
+    assert policy.notifications.folder == "INBOX"
+    assert policy.notifications.min_interval_seconds == 30
+
+
+def test_notifications_overrides(tmp_path: Path) -> None:
+    write_policy(
+        tmp_path,
+        '[notifications]\nenabled = true\nfolder = "INBOX"\nmin_interval_seconds = 5\n',
+    )
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.notifications.enabled is True
+    assert policy.notifications.folder == "INBOX"
+    assert policy.notifications.min_interval_seconds == 5
+
+
+def test_invalid_notifications_values(tmp_path: Path) -> None:
+    cases = [
+        ('[notifications]\nenabled = "yes"\n', "enabled"),
+        ('[notifications]\nfolder = ""\n', "folder"),
+        ("[notifications]\nmin_interval_seconds = -1\n", "min_interval_seconds"),
+    ]
+    for text, match in cases:
+        write_policy(tmp_path, text)
+        with pytest.raises(PolicyError, match=match):
+            load_policy(env=env_for(tmp_path))
+
+
 def test_effective_mode_for_presets_and_custom() -> None:
     assert effective_mode(Capabilities()) == "read"
     assert effective_mode(Capabilities(draft=True)) == "draft"

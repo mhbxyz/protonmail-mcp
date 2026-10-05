@@ -89,6 +89,12 @@ templates `mail://message/{message-id}` and `mail://thread/{message-id}` (percen
 Message-IDs, for example `%3Cid%40example.com%3E`). They contain the same data as the read
 tools and never trigger writes.
 
+With `[notifications] enabled = true`, the server watches `notifications.folder` with
+IMAP IDLE and publishes resource-updated events for `mail://inbox` (clients subscribe via
+`resources/subscribe`, or `subscriptions/listen` on newer protocol versions). Events
+carry no content; the `mail://inbox` resource itself exposes only counts and recent
+message identifiers. The watcher reconnects with exponential backoff and logs to stderr.
+
 Results are structured (Pydantic models). Every message carries its `Message-ID`; use
 that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronisations.
 
@@ -170,6 +176,11 @@ enabled = false
 path = "~/.local/state/protonmail-mcp/index.db"
 # excluded_folders = ["Spam"]
 max_body_chars = 10000
+
+[notifications]
+enabled = false
+folder = "INBOX"
+min_interval_seconds = 30
 ```
 
 See [SECURITY.md](SECURITY.md) for the confirmation flow and [ROADMAP.md](ROADMAP.md) for

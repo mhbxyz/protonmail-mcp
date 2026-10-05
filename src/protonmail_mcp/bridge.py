@@ -52,6 +52,9 @@ class BridgeClient:
         with self._lock:
             self._disconnect()
 
+    def open_connection(self) -> IMAPClient:
+        return self._connect()
+
     def list_folders(self) -> list[Folder]:
         def operation(client: IMAPClient) -> list[Folder]:
             folders: list[Folder] = []

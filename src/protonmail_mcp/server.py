@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import functools
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 from urllib.parse import unquote
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.subscriptions import ResourceUpdated
 from mcp.types import ToolAnnotations
 
 from . import __version__
@@ -69,6 +72,7 @@ from .send import (
     transmission_from_raw,
 )
 from .state import SendState
+from .watcher import InboxWatcher
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 LOCAL_WRITE = ToolAnnotations(
@@ -411,6 +415,57 @@ def _resolve_trash(client: BridgeClient, requested: str) -> str:
     return trash
 
 
+NOTIFICATIONS_URI = "mail://inbox"
+
+
+def _default_watcher_factory(
+    policy: Policy,
+) -> Callable[[Callable[[], None]], InboxWatcher]:
+    def factory(on_event: Callable[[], None]) -> InboxWatcher:
+        return InboxWatcher(
+            connect=lambda: get_client().open_connection(),
+            on_event=on_event,
+            folder=policy.notifications.folder,
+            min_interval_seconds=policy.notifications.min_interval_seconds,
+        )
+
+    return factory
+
+
+def _notifications_lifespan(
+    holder: dict[str, MCPServer[Any]],
+    factory: Callable[[Callable[[], None]], InboxWatcher],
+) -> Callable[[Any], Any]:
+    @asynccontextmanager
+    async def lifespan(_lowlevel: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        tasks: set[asyncio.Task[None]] = set()
+
+        def on_event() -> None:
+            def publish() -> None:
+                task = loop.create_task(
+                    holder["server"]._subscriptions.publish(
+                        ResourceUpdated(uri=NOTIFICATIONS_URI)
+                    )
+                )
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(publish)
+
+        watcher = factory(on_event)
+        watcher.start()
+        try:
+            yield None
+        finally:
+            watcher.stop()
+            for task in list(tasks):
+                task.cancel()
+
+    return lifespan
+
+
 def _select_attachment(
     parts: Sequence[AttachmentPart],
     filename: str | None,
@@ -449,7 +504,10 @@ def _undo_preview(entry: MoveEntry) -> PreparedAction:
     return _prepared_action(prepared)
 
 
-def build_server(policy: Policy) -> MCPServer:
+def build_server(
+    policy: Policy,
+    watcher_factory: Callable[[Callable[[], None]], InboxWatcher] | None = None,
+) -> MCPServer:
     capabilities = policy.capabilities
     send_state = SendState.from_policy(policy) if capabilities.send else None
     index_store = (
@@ -457,6 +515,12 @@ def build_server(policy: Policy) -> MCPServer:
         if policy.index.enabled
         else None
     )
+    server_holder: dict[str, MCPServer[Any]] = {}
+    lifespan = None
+    if policy.notifications.enabled:
+        lifespan = _notifications_lifespan(
+            server_holder, watcher_factory or _default_watcher_factory(policy)
+        )
     draft_hint = ""
     if capabilities.draft:
         draft_hint = (
@@ -494,10 +558,18 @@ def build_server(policy: Policy) -> MCPServer:
             " The local full-text index is enabled: sync_index indexes recent messages "
             "into a local SQLite FTS5 store and search_index queries it offline."
         )
+    notifications_hint = ""
+    if policy.notifications.enabled:
+        notifications_hint = (
+            f" New-mail notifications are enabled: the server watches "
+            f"{policy.notifications.folder!r} with IMAP IDLE and publishes "
+            f"{NOTIFICATIONS_URI} resource-updated events that carry no content."
+        )
     server = MCPServer(
         name="protonmail",
         title="Proton Mail",
         version=__version__,
+        lifespan=lifespan,
         instructions=(
             "Access to a Proton Mail mailbox through a local Proton Bridge instance. "
             f"Active policy: mode={policy.mode}, capabilities: {capabilities.describe()}. "
@@ -509,8 +581,10 @@ def build_server(policy: Policy) -> MCPServer:
             + send_hint
             + delete_hint
             + index_hint
+            + notifications_hint
         ),
     )
+    server_holder["server"] = server
 
     @server.tool(annotations=READ_ONLY)
     @_audited("list_folders")
@@ -1745,6 +1819,34 @@ def build_server(policy: Policy) -> MCPServer:
     def resource_thread(message_id: str) -> list[dict[str, Any]]:
         decoded = unquote(message_id)
         return [summary.model_dump() for summary in get_client().get_thread(decoded)]
+
+    if policy.notifications.enabled:
+
+        @server.resource(
+            NOTIFICATIONS_URI,
+            name="inbox",
+            description=(
+                "Unread and total counts plus recent message identifiers; no bodies"
+            ),
+            mime_type="application/json",
+        )
+        def resource_inbox() -> dict[str, Any]:
+            client = get_client()
+            statuses = client.get_status(policy.notifications.folder)
+            page = client.list_emails(folder=policy.notifications.folder, limit=5)
+            return {
+                "folder": policy.notifications.folder,
+                "unread": statuses[0].unread if statuses else 0,
+                "total": statuses[0].total if statuses else 0,
+                "recent": [
+                    {
+                        "message_id": item.message_id,
+                        "received": item.received,
+                        "unread": item.unread,
+                    }
+                    for item in page.messages
+                ],
+            }
 
     return server
 

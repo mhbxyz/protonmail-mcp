@@ -1253,6 +1253,66 @@ def test_resource_folders_and_message() -> None:
         cleanup()
 
 
+def test_notifications_lifespan_starts_watcher_and_publishes() -> None:
+    from protonmail_mcp.policy import NotificationsPolicy
+
+    started: list[bool] = []
+    stopped: list[bool] = []
+    callbacks: list[Any] = []
+
+    class FakeWatcher:
+        def __init__(self, on_event: Any) -> None:
+            self.on_event = on_event
+
+        def start(self) -> None:
+            started.append(True)
+
+        def stop(self) -> None:
+            stopped.append(True)
+
+    def factory(on_event: Any) -> Any:
+        watcher = FakeWatcher(on_event)
+        callbacks.append(watcher)
+        return watcher
+
+    policy = Policy(
+        mode="read",
+        capabilities=Capabilities(),
+        confirmation_ttl_seconds=300,
+        source="test",
+        notifications=NotificationsPolicy(enabled=True),
+    )
+    built = build_server(policy, watcher_factory=factory)
+    resources = asyncio.run(built.list_resources())
+    assert "inbox" in {resource.name for resource in resources}
+
+    class FakeBus:
+        def __init__(self) -> None:
+            self.events: list[Any] = []
+
+        async def publish(self, event: Any) -> None:
+            self.events.append(event)
+
+    bus = FakeBus()
+    built._subscriptions = bus  # type: ignore[assignment]
+
+    async def run_lifespan() -> None:
+        low = built._lowlevel_server
+        async with low.lifespan(low):
+            callbacks[0].on_event()
+            await asyncio.sleep(0.05)
+
+    asyncio.run(run_lifespan())
+    assert started
+    assert stopped
+    assert [event.uri for event in bus.events] == ["mail://inbox"]
+
+
+def test_notifications_resource_absent_when_disabled() -> None:
+    resources = asyncio.run(server.list_resources())
+    assert "inbox" not in {resource.name for resource in resources}
+
+
 def test_create_draft_is_idempotent() -> None:
     built = draft_server()
     mailbox = FakeMailbox()

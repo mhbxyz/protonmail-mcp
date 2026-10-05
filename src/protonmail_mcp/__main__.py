@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -10,6 +11,16 @@ from .config import ConfigError
 from .policy import PolicyError, effective_mode
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _configure_logging() -> None:
+    logger = logging.getLogger("protonmail_mcp")
+    if logger.handlers:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -64,6 +75,7 @@ def run_server() -> int:
     except PolicyError as exc:
         print(f"ERROR: invalid policy: {exc}", file=sys.stderr)
         return 2
+    _configure_logging()
     server.run(transport="stdio")
     return 0
 
@@ -93,6 +105,7 @@ def run_http(host: str, port: int, token: str) -> int:
 
     from .http_transport import BearerAuthMiddleware
 
+    _configure_logging()
     http_server = build_server(POLICY)
     app = http_server.streamable_http_app(host=host, json_response=True)
     uvicorn.run(BearerAuthMiddleware(app, token), host=host, port=port, log_level="warning")
