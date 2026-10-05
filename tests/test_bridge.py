@@ -350,6 +350,22 @@ def test_folder_by_flag() -> None:
     assert client.folder_by_flag("\\Trash") is None
 
 
+def test_delete_message_permanently_expunges_uid() -> None:
+    fake = FakeIMAPClient(search_results=[7])
+    client = attach(BridgeClient(make_config()), fake)
+    assert client.delete_message_permanently("<m@x>", "Trash") == 7
+    assert fake.selected == ("Trash", False)
+    assert fake.added_flags == [([7], ["\\Deleted"])]
+    assert fake.expunged == [[7]]
+
+
+def test_delete_message_permanently_missing_raises() -> None:
+    fake = FakeIMAPClient(search_results=[])
+    client = attach(BridgeClient(make_config()), fake)
+    with pytest.raises(MessageNotFoundError):
+        client.delete_message_permanently("<gone@x>", "Trash")
+
+
 def test_set_flags_adds_and_removes_by_message_id() -> None:
     fake = FakeIMAPClient(search_results=[3], fetch_results={3: {b"FLAGS": ()}})
     client = attach(BridgeClient(make_config()), fake)

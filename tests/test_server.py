@@ -49,6 +49,7 @@ class FakeMailbox:
         self.draft_raw: bytes = b""
         self.thread: list[EmailSummary] = []
         self.attachments: list[Attachment] = []
+        self.permanently_deleted: list[tuple[str, str]] = []
 
     def list_folders(self) -> list[Folder]:
         return [
@@ -102,6 +103,12 @@ class FakeMailbox:
     def find_drafts_folder(self) -> str:
         return "Drafts"
 
+    def folder_by_flag(self, flag: str) -> str | None:
+        for folder in self.list_folders():
+            if flag in folder.flags:
+                return folder.name
+        return None
+
     def list_drafts(self, limit: int = 20) -> list[EmailSummary]:
         return [EmailSummary(message_id="<draft-5@test>", folder="Drafts", uid=5, subject="Draft 5")]
 
@@ -138,6 +145,10 @@ class FakeMailbox:
             raise MessageNotFoundError(f"Draft UID {uid} not found")
         self.draft_uids.discard(uid)
         self.deleted.append(uid)
+
+    def delete_message_permanently(self, message_id: str, folder: str) -> int:
+        self.permanently_deleted.append((message_id, folder))
+        return 7
 
     def set_flags(
         self,
@@ -1019,6 +1030,124 @@ def test_send_delete_failure_and_duplicate_retry(tmp_path: Path) -> None:
     assert "identical body" in same_body.content[0].text
     assert tool_payload(retry)["duplicate"] is True
     assert len(sender.sent) == 1
+
+
+def delete_server() -> Any:
+    policy = Policy(
+        mode="delete",
+        capabilities=Capabilities(delete=True),
+        confirmation_ttl_seconds=300,
+        source="test",
+    )
+    return build_server(policy)
+
+
+def test_delete_message_flow() -> None:
+    built = delete_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        prepared = tool_payload(
+            call_built(built, "prepare_delete_message", {"message_id": "<m@x>"})
+        )
+        assert prepared["preview"]["target"]["folder"] == "Trash"
+        assert prepared["preview"]["irreversible"] is True
+        phrase = prepared["preview"]["confirm_phrase"]
+        assert phrase == "permanently delete <m@x>"
+
+        wrong_phrase = call_built(
+            built,
+            "commit_delete_message",
+            {"token": prepared["token"], "message_id": "<m@x>", "confirm": "yes"},
+        )
+        assert wrong_phrase.is_error is True
+        assert mailbox.permanently_deleted == []
+
+        committed = call_built(
+            built,
+            "commit_delete_message",
+            {
+                "token": prepared["token"],
+                "message_id": "<m@x>",
+                "confirm": phrase,
+            },
+        )
+    finally:
+        cleanup()
+    assert committed.is_error in (False, None)
+    assert mailbox.permanently_deleted == [("<m@x>", "Trash")]
+    assert tool_payload(committed)["folder"] == "Trash"
+
+
+def test_delete_message_refuses_outside_trash() -> None:
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        result = call_built(
+            delete_server(),
+            "prepare_delete_message",
+            {"message_id": "<m@x>", "folder": "INBOX"},
+        )
+    finally:
+        cleanup()
+    assert result.is_error is True
+    assert "Trash" in result.content[0].text
+
+
+def test_delete_message_requires_token() -> None:
+    built = delete_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        prepared = tool_payload(
+            call_built(built, "prepare_delete_message", {"message_id": "<m@x>"})
+        )
+        unknown = call_built(
+            built,
+            "commit_delete_message",
+            {
+                "token": "bogus",
+                "message_id": "<m@x>",
+                "confirm": prepared["preview"]["confirm_phrase"],
+            },
+        )
+    finally:
+        cleanup()
+    assert unknown.is_error is True
+    assert mailbox.permanently_deleted == []
+
+
+def test_delete_message_is_audited(tmp_path: Path) -> None:
+    from protonmail_mcp import server as server_module
+    from protonmail_mcp.audit import AuditLog
+
+    log_path = tmp_path / "audit.jsonl"
+    original = server_module.AUDIT
+    server_module.AUDIT = AuditLog(log_path)
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        prepared = tool_payload(
+            call_built(delete_server(), "prepare_delete_message", {"message_id": "<m@x>"})
+        )
+        call_built(
+            delete_server(),
+            "commit_delete_message",
+            {
+                "token": prepared["token"],
+                "message_id": "<m@x>",
+                "confirm": prepared["preview"]["confirm_phrase"],
+            },
+        )
+    finally:
+        cleanup()
+        server_module.AUDIT = original
+    entries = [
+        json.loads(line) for line in log_path.read_text().strip().splitlines()
+    ]
+    tools = [entry["tool"] for entry in entries]
+    assert "prepare_delete_message" in tools
+    assert "commit_delete_message" in tools
+    assert all(entry["args_digest"] for entry in entries)
 
 
 def test_create_draft_is_idempotent() -> None:

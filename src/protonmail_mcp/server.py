@@ -45,6 +45,7 @@ from .models import (
     EmailSummary,
     Folder,
     FolderStatus,
+    MessageDeleted,
     OrganizeResult,
     PreparedAction,
     SavedFile,
@@ -386,6 +387,25 @@ def _check_sendable(
         raise SendError("send refused: " + "; ".join(reasons))
 
 
+def _delete_message_payload(message_id: str, folder: str) -> dict[str, Any]:
+    return {"action": "delete_message", "message_id": message_id, "folder": folder}
+
+
+def _delete_phrase(message_id: str) -> str:
+    return f"permanently delete {message_id}"
+
+
+def _resolve_trash(client: BridgeClient, requested: str) -> str:
+    trash = client.folder_by_flag("\\Trash")
+    if trash is None:
+        raise MailboxError("no Trash folder was found")
+    if requested and requested != trash:
+        raise MailboxError(
+            f"permanent deletion is only allowed from Trash ({trash!r})"
+        )
+    return trash
+
+
 def _select_attachment(
     parts: Sequence[AttachmentPart],
     filename: str | None,
@@ -450,6 +470,14 @@ def build_server(policy: Policy) -> MCPServer:
             "existing draft through Bridge SMTP after allowlist, quota, and loop-guard "
             "checks; the draft is removed only after submission succeeds."
         )
+    delete_hint = ""
+    if capabilities.delete:
+        delete_hint = (
+            " Delete tools are enabled: prepare_delete_message / commit_delete_message "
+            "permanently erase one message from Trash. There is no bulk deletion and no "
+            "empty-trash tool; the commit requires the exact confirmation phrase from "
+            "the preview."
+        )
     server = MCPServer(
         name="protonmail",
         title="Proton Mail",
@@ -463,6 +491,7 @@ def build_server(policy: Policy) -> MCPServer:
             + draft_hint
             + organize_hint
             + send_hint
+            + delete_hint
         ),
     )
 
@@ -1528,6 +1557,76 @@ def build_server(policy: Policy) -> MCPServer:
                     warnings=warnings,
                 )
             except (ConfigError, MailboxError, SendError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+    if capabilities.delete:
+
+        @server.tool(annotations=WRITE_ACTION)
+        @_audited("prepare_delete_message")
+        def prepare_delete_message(message_id: str, folder: str = "") -> PreparedAction:
+            """Prepare permanently deleting one message. The message must currently be in
+            Trash. Nothing is erased until commit_delete_message is called with the exact
+            confirmation phrase from the preview and the returned token.
+
+            Args:
+                message_id: Message-ID of the message to erase.
+                folder: Must be the Trash folder; empty uses the folder flagged \\Trash.
+            """
+            try:
+                client = get_client()
+                resolved = _resolve_trash(client, folder)
+                content = client.get_message(message_id, folder=resolved, max_chars=200)
+                preview = {
+                    "target": {
+                        "message_id": content.message_id,
+                        "subject": content.subject,
+                        "sender": content.sender,
+                        "date": content.date or content.received,
+                        "folder": resolved,
+                    },
+                    "irreversible": True,
+                    "confirm_phrase": _delete_phrase(message_id),
+                }
+                return _prepared_action(
+                    CONFIRMATIONS.prepare(
+                        "delete_message",
+                        _delete_message_payload(message_id, resolved),
+                        preview=preview,
+                    )
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
+        @_audited("commit_delete_message")
+        def commit_delete_message(
+            token: str,
+            message_id: str,
+            confirm: str,
+            folder: str = "",
+        ) -> MessageDeleted:
+            """Commit a prepared permanent deletion: irreversibly erases the message
+            from Trash. The token, message_id and confirmation phrase must match
+            prepare_delete_message.
+
+            Args:
+                token: Token returned by prepare_delete_message.
+                message_id: Message-ID of the message to erase.
+                confirm: Must be exactly 'permanently delete <message_id>'.
+                folder: Must be the Trash folder; empty uses the folder flagged \\Trash.
+            """
+            try:
+                client = get_client()
+                resolved = _resolve_trash(client, folder)
+                if confirm != _delete_phrase(message_id):
+                    raise MailboxError(
+                        "confirmation phrase does not match; expected "
+                        f"'permanently delete {message_id}'"
+                    )
+                CONFIRMATIONS.commit(token, _delete_message_payload(message_id, resolved))
+                client.delete_message_permanently(message_id, resolved)
+                return MessageDeleted(message_id=message_id, folder=resolved)
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
     return server

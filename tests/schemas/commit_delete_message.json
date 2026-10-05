@@ -1,0 +1,28 @@
+{
+  "properties": {
+    "confirm": {
+      "title": "Confirm",
+      "type": "string"
+    },
+    "folder": {
+      "default": "",
+      "title": "Folder",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "token": {
+      "title": "Token",
+      "type": "string"
+    }
+  },
+  "required": [
+    "token",
+    "message_id",
+    "confirm"
+  ],
+  "title": "commit_delete_messageArguments",
+  "type": "object"
+}

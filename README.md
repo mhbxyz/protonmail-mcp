@@ -27,7 +27,8 @@ enforced server-side:
 - **organize**: seen/flagged state, moves with undo, label add/remove.
 - **send**: submit an existing draft through Bridge SMTP after allowlist, quota, size
   and loop-guard checks.
-- **delete**: permanent deletion, still on the [roadmap](ROADMAP.md).
+- **delete**: permanently erase one message from Trash, with a typed confirmation phrase
+  and no bulk operation.
 
 Every mutation is prepare/commit with payload-bound confirmation tokens; see
 [SECURITY.md](SECURITY.md) for the security model.
@@ -69,6 +70,11 @@ the recipient allowlist, hourly/daily quotas, message size, and loop guards
 (`Auto-Submitted`, `Precedence`, `List-*`, no-reply recipients, thread depth, duplicate
 bodies). The draft is removed only after the SMTP server accepts the message. See
 [docs/send-design.md](docs/send-design.md).
+
+When the `delete` capability is enabled, `prepare_delete_message` /
+`commit_delete_message` permanently erase a single message from Trash. The commit must
+repeat the exact phrase `permanently delete <message-id>`; there is no bulk deletion and
+no empty-trash tool.
 
 Results are structured (Pydantic models). Every message carries its `Message-ID`; use
 that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronisations.
@@ -217,7 +223,8 @@ non-zero with a clear error if the configuration or the Bridge session is wrong.
 Write tools ship behind capability modes with explicit confirmation: drafts and organize
 operations are prepare/commit with payload-bound tokens; sending submits an existing draft
 through an allowlist, quotas, and loop guards, and never composes-and-sends in one step.
-Permanent deletion remains on the roadmap. Autonomous send or delete is never the default.
+Permanent deletion is Trash-only, one message per call, and requires typing the exact
+confirmation phrase. Autonomous send or delete is never the default.
 
 Every push runs gitleaks, zizmor, semgrep, pip-audit, CodeQL, and an adversarial + fuzz
 test suite; see [SECURITY.md](SECURITY.md) for the full list of gates and the structural

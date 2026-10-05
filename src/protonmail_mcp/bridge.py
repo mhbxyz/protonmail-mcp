@@ -356,6 +356,24 @@ class BridgeClient:
                 return folder.name
         return None
 
+    def delete_message_permanently(self, message_id: str, folder: str) -> int:
+        def operation(client: IMAPClient) -> int:
+            try:
+                client.select_folder(folder)
+                uids = client.search(["HEADER", "Message-ID", message_id])
+                if not uids:
+                    raise MessageNotFoundError(
+                        f"No message with Message-ID {message_id!r} in folder {folder!r}"
+                    )
+                uid = uids[-1]
+                client.add_flags([uid], [r"\Deleted"])
+                client.expunge([uid])
+                return int(uid)
+            except (IMAPClientError, *_RETRYABLE_ERRORS) as exc:
+                raise MailboxError(f"deleting message {message_id!r} failed: {exc}") from exc
+
+        return self._run(operation)
+
     def set_flags(
         self,
         message_ids: Sequence[str],

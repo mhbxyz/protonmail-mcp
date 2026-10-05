@@ -108,6 +108,11 @@ class DraftSent(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class MessageDeleted(BaseModel):
+    message_id: str
+    folder: str
+
+
 class PreparedAction(BaseModel):
     token: str
     action: str

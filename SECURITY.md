@@ -110,8 +110,9 @@ The LLM cannot grant itself privileges: allowlists, quotas, and caps live in the
 
 ### Delete safeguards
 
-Deletion is the highest capability. It is Trash-only, requires a per-message confirmation
-token, has a strict per-call cap, never runs in bulk, and no "empty trash" tool exists.
+Deletion is the highest capability. It is Trash-only, erases one message per call,
+requires a per-message confirmation token **and** a typed confirmation phrase, has a
+strict per-call cap, and no "empty trash" tool exists.
 
 ### Audit
 
