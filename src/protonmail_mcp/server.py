@@ -10,6 +10,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from . import __version__
 from .audit import AuditLog
 from .bridge import BridgeClient, MailboxError, MessageNotFoundError
 from .compose import (
@@ -481,7 +482,7 @@ def build_server(policy: Policy) -> MCPServer:
     server = MCPServer(
         name="protonmail",
         title="Proton Mail",
-        version="0.1.0",
+        version=__version__,
         instructions=(
             "Access to a Proton Mail mailbox through a local Proton Bridge instance. "
             f"Active policy: mode={policy.mode}, capabilities: {capabilities.describe()}. "

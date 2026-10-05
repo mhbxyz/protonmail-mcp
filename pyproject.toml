@@ -1,6 +1,6 @@
 [project]
 name = "protonmail-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for Proton Mail via Proton Bridge (IMAP/SMTP)"
 readme = "README.md"
 requires-python = ">=3.13"
