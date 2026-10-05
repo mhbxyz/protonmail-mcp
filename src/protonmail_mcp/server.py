@@ -5,6 +5,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
+from urllib.parse import unquote
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -33,6 +34,7 @@ from .confirmations import (
 )
 from .files import SandboxError, sandbox_directory, write_in_sandbox
 from .idempotency import DraftReference, IdempotencyStore
+from .index import MessageIndex
 from .journal import MoveEntry, MoveJournal
 from .models import (
     Attachment,
@@ -46,6 +48,8 @@ from .models import (
     EmailSummary,
     Folder,
     FolderStatus,
+    IndexHit,
+    IndexSyncResult,
     MessageDeleted,
     OrganizeResult,
     PreparedAction,
@@ -448,6 +452,11 @@ def _undo_preview(entry: MoveEntry) -> PreparedAction:
 def build_server(policy: Policy) -> MCPServer:
     capabilities = policy.capabilities
     send_state = SendState.from_policy(policy) if capabilities.send else None
+    index_store = (
+        MessageIndex(policy.index.path, policy.index.max_body_chars)
+        if policy.index.enabled
+        else None
+    )
     draft_hint = ""
     if capabilities.draft:
         draft_hint = (
@@ -479,6 +488,12 @@ def build_server(policy: Policy) -> MCPServer:
             "empty-trash tool; the commit requires the exact confirmation phrase from "
             "the preview."
         )
+    index_hint = ""
+    if policy.index.enabled:
+        index_hint = (
+            " The local full-text index is enabled: sync_index indexes recent messages "
+            "into a local SQLite FTS5 store and search_index queries it offline."
+        )
     server = MCPServer(
         name="protonmail",
         title="Proton Mail",
@@ -493,6 +508,7 @@ def build_server(policy: Policy) -> MCPServer:
             + organize_hint
             + send_hint
             + delete_hint
+            + index_hint
         ),
     )
 
@@ -746,6 +762,62 @@ def build_server(policy: Policy) -> MCPServer:
             raise ToolError(f"{exc}. Try list_folders to find the right folder.") from exc
         except (ConfigError, MailboxError, SandboxError) as exc:
             raise _guard(exc) from exc
+
+    if policy.index.enabled:
+
+        @server.tool(annotations=LOCAL_WRITE)
+        @_audited("sync_index")
+        def sync_index(folder: str = "", limit: int = 100) -> IndexSyncResult:
+            """Index recent messages into the local full-text store (opt-in). The index
+            is a plaintext SQLite FTS5 database; attachments are never indexed and body
+            text is truncated per policy.
+
+            Args:
+                folder: A single folder to index; empty indexes every selectable folder
+                    except the ones excluded by policy.
+                limit: Maximum messages per folder (1-100).
+            """
+            try:
+                client = get_client()
+                store = index_store
+                if store is None:
+                    raise MailboxError("the local index is not enabled")
+                if folder:
+                    if folder in policy.index.excluded_folders:
+                        raise MailboxError(f"folder is excluded from the index: {folder!r}")
+                    folders = [folder]
+                else:
+                    folders = [
+                        item.name
+                        for item in client.list_folders()
+                        if item.selectable
+                        and item.name not in policy.index.excluded_folders
+                    ]
+                indexed = 0
+                for name in folders:
+                    indexed += store.sync_folder(client, name, _clamp(limit))
+                return IndexSyncResult(indexed=indexed, folders=folders, total=store.count())
+            except (ConfigError, MailboxError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=READ_ONLY)
+        @_audited("search_index")
+        def search_index(query: str, folder: str = "", limit: int = 20) -> list[IndexHit]:
+            """Search the local index (fast and offline). The query is treated as a
+            literal phrase; pair it with sync_index to keep the index fresh.
+
+            Args:
+                query: Text to find in indexed subjects, senders, recipients and bodies.
+                folder: Restrict to one indexed folder; empty searches all indexed ones.
+                limit: Maximum hits (1-100).
+            """
+            try:
+                store = index_store
+                if store is None:
+                    raise MailboxError("the local index is not enabled")
+                return store.search(query, folder or None, _clamp(limit))
+            except (ConfigError, MailboxError) as exc:
+                raise _guard(exc) from exc
 
     if capabilities.draft:
 
@@ -1629,6 +1701,50 @@ def build_server(policy: Policy) -> MCPServer:
                 return MessageDeleted(message_id=message_id, folder=resolved)
             except (ConfigError, MailboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
+
+    @server.resource(
+        "mail://folders",
+        name="folders",
+        description="Every folder and label, with IMAP flags and selectability",
+        mime_type="application/json",
+    )
+    def resource_folders() -> list[dict[str, Any]]:
+        return [folder.model_dump() for folder in get_client().list_folders()]
+
+    @server.resource(
+        "mail://status",
+        name="status",
+        description="Total and unread counts per selectable folder",
+        mime_type="application/json",
+    )
+    def resource_status() -> list[dict[str, Any]]:
+        return [status.model_dump() for status in get_client().get_status()]
+
+    @server.resource(
+        "mail://message/{message_id}",
+        name="message",
+        description="A full message by Message-ID; percent-encode the angle brackets",
+        mime_type="application/json",
+    )
+    def resource_message(message_id: str) -> dict[str, Any]:
+        decoded = unquote(message_id)
+        client = get_client()
+        folder = client.folder_by_flag("\\All") or "INBOX"
+        try:
+            return client.get_message(decoded, folder=folder).model_dump()
+        except MessageNotFoundError:
+            drafts = client.find_drafts_folder()
+            return client.get_message(decoded, folder=drafts).model_dump()
+
+    @server.resource(
+        "mail://thread/{message_id}",
+        name="thread",
+        description="A conversation reconstructed from References and In-Reply-To",
+        mime_type="application/json",
+    )
+    def resource_thread(message_id: str) -> list[dict[str, Any]]:
+        decoded = unquote(message_id)
+        return [summary.model_dump() for summary in get_client().get_thread(decoded)]
 
     return server
 

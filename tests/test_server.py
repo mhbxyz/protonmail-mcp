@@ -21,7 +21,13 @@ from protonmail_mcp.models import (
     FolderStatus,
 )
 from protonmail_mcp.parsing import attachment_parts
-from protonmail_mcp.policy import Capabilities, FilesPolicy, Policy, SendPolicy
+from protonmail_mcp.policy import (
+    Capabilities,
+    FilesPolicy,
+    IndexPolicy,
+    Policy,
+    SendPolicy,
+)
 from protonmail_mcp.send import SendError
 from protonmail_mcp.server import (
     build_server,
@@ -1148,6 +1154,83 @@ def test_delete_message_is_audited(tmp_path: Path) -> None:
     assert "prepare_delete_message" in tools
     assert "commit_delete_message" in tools
     assert all(entry["args_digest"] for entry in entries)
+
+
+def index_server(tmp_path: Path, **overrides: Any) -> Any:
+    index_policy = IndexPolicy(enabled=True, path=str(tmp_path / "index.db"), **overrides)
+    policy = Policy(
+        mode="read",
+        capabilities=Capabilities(),
+        confirmation_ttl_seconds=300,
+        source="test",
+        index=index_policy,
+    )
+    return build_server(policy)
+
+
+def test_index_tools_sync_and_search(tmp_path: Path) -> None:
+    built = index_server(tmp_path)
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        synced = tool_payload(
+            call_built(built, "sync_index", {"folder": "INBOX", "limit": 10})
+        )
+        hits = tool_payload(call_built(built, "search_index", {"query": "Original"}))
+    finally:
+        cleanup()
+    assert synced["indexed"] == 1
+    assert synced["total"] == 1
+    assert hits and hits[0]["message_id"] == "<hello@example.com>"
+
+
+def test_index_tools_skip_excluded_folders(tmp_path: Path) -> None:
+    built = index_server(tmp_path, excluded_folders=("INBOX",))
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        refused = call_built(built, "sync_index", {"folder": "INBOX"})
+        synced = tool_payload(call_built(built, "sync_index", {}))
+    finally:
+        cleanup()
+    assert refused.is_error is True
+    assert "excluded" in refused.content[0].text
+    assert "INBOX" not in synced["folders"]
+
+
+def test_index_tools_absent_when_disabled() -> None:
+    policy = Policy(
+        mode="read",
+        capabilities=Capabilities(),
+        confirmation_ttl_seconds=300,
+        source="test",
+    )
+    names = {tool.name for tool in asyncio.run(build_server(policy).list_tools())}
+    assert "sync_index" not in names
+    assert "search_index" not in names
+
+
+def test_resources_are_registered() -> None:
+    resources = asyncio.run(server.list_resources())
+    names = {resource.name for resource in resources}
+    assert {"folders", "status"} <= names
+    templates = asyncio.run(server.list_resource_templates())
+    template_names = {template.name for template in templates}
+    assert {"message", "thread"} <= template_names
+
+
+def test_resource_folders_and_message() -> None:
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        folders = asyncio.run(server.read_resource("mail://folders"))
+        message = asyncio.run(server.read_resource("mail://message/%3Cm%40x%3E"))
+
+        def text_of(contents: Any) -> str:
+            content = contents[0].content
+            return content.decode() if isinstance(content, bytes) else content
+
+        assert "INBOX" in text_of(folders)
+        assert "<m@x>" in text_of(message)
+    finally:
+        cleanup()
 
 
 def test_create_draft_is_idempotent() -> None:

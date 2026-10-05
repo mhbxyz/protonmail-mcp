@@ -113,6 +113,22 @@ class MessageDeleted(BaseModel):
     folder: str
 
 
+class IndexHit(BaseModel):
+    message_id: str
+    folder: str
+    subject: str = ""
+    sender: str = ""
+    received: str = ""
+    unread: bool = True
+    snippet: str = ""
+
+
+class IndexSyncResult(BaseModel):
+    indexed: int
+    folders: list[str] = Field(default_factory=list)
+    total: int = 0
+
+
 class PreparedAction(BaseModel):
     token: str
     action: str

@@ -47,6 +47,8 @@ Every mutation is prepare/commit with payload-bound confirmation tokens; see
 | `list_attachments` | Attachment names, types and sizes without saving anything |
 | `save_attachment` | Save one attachment into the local sandbox (traversal-safe, size-capped, never overwrites) |
 | `export_email` | Export a message as `.eml` into the local sandbox |
+| `sync_index` | Index recent messages into the local SQLite FTS5 store (opt-in via `[index]`) |
+| `search_index` | Fast, offline full-text search over the local index |
 
 When the `draft` capability is enabled (see [Capability policy](#capability-policy)),
 additional tools are registered: `list_drafts`, `create_draft`, `preview_draft` (renders
@@ -75,6 +77,17 @@ When the `delete` capability is enabled, `prepare_delete_message` /
 `commit_delete_message` permanently erase a single message from Trash. The commit must
 repeat the exact phrase `permanently delete <message-id>`; there is no bulk deletion and
 no empty-trash tool.
+
+When `[index] enabled = true`, `sync_index` builds a local plaintext SQLite FTS5 store
+(headers plus truncated body text; attachments are never indexed and folders can be
+excluded) and `search_index` queries it for fast offline search.
+
+### MCP resources
+
+The server also exposes read-only resources: `mail://folders`, `mail://status`, and the
+templates `mail://message/{message-id}` and `mail://thread/{message-id}` (percent-encode
+Message-IDs, for example `%3Cid%40example.com%3E`). They contain the same data as the read
+tools and never trigger writes.
 
 Results are structured (Pydantic models). Every message carries its `Message-ID`; use
 that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronisations.
@@ -151,6 +164,12 @@ allow_self = true
 max_per_hour = 20
 max_per_day = 100
 state_path = "~/.local/state/protonmail-mcp/state.db"
+
+[index]
+enabled = false
+path = "~/.local/state/protonmail-mcp/index.db"
+# excluded_folders = ["Spam"]
+max_body_chars = 10000
 ```
 
 See [SECURITY.md](SECURITY.md) for the confirmation flow and [ROADMAP.md](ROADMAP.md) for

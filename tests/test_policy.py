@@ -216,6 +216,43 @@ def test_invalid_send_values(tmp_path: Path) -> None:
             load_policy(env=env_for(tmp_path))
 
 
+def test_index_defaults(tmp_path: Path) -> None:
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.index.enabled is False
+    assert policy.index.path == "~/.local/state/protonmail-mcp/index.db"
+    assert policy.index.excluded_folders == ()
+    assert policy.index.max_body_chars == 10000
+
+
+def test_index_overrides(tmp_path: Path) -> None:
+    write_policy(
+        tmp_path,
+        "[index]\n"
+        "enabled = true\n"
+        'path = "index.db"\n'
+        'excluded_folders = ["Spam"]\n'
+        "max_body_chars = 500\n",
+    )
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.index.enabled is True
+    assert policy.index.path == "index.db"
+    assert policy.index.excluded_folders == ("Spam",)
+    assert policy.index.max_body_chars == 500
+
+
+def test_invalid_index_values(tmp_path: Path) -> None:
+    cases = [
+        ('[index]\nenabled = "yes"\n', "enabled"),
+        ('[index]\npath = ""\n', "path"),
+        ("[index]\nexcluded_folders = [1]\n", "excluded_folders"),
+        ("[index]\nmax_body_chars = 0\n", "max_body_chars"),
+    ]
+    for text, match in cases:
+        write_policy(tmp_path, text)
+        with pytest.raises(PolicyError, match=match):
+            load_policy(env=env_for(tmp_path))
+
+
 def test_effective_mode_for_presets_and_custom() -> None:
     assert effective_mode(Capabilities()) == "read"
     assert effective_mode(Capabilities(draft=True)) == "draft"

@@ -1,0 +1,16 @@
+{
+  "properties": {
+    "folder": {
+      "default": "",
+      "title": "Folder",
+      "type": "string"
+    },
+    "limit": {
+      "default": 100,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "title": "sync_indexArguments",
+  "type": "object"
+}

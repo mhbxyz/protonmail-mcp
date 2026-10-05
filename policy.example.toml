@@ -43,3 +43,9 @@ duplicate_window_seconds = 600
 max_thread_depth = 10
 max_message_bytes = 26214400
 state_path = "~/.local/state/protonmail-mcp/state.db"
+
+[index]
+enabled = false
+path = "~/.local/state/protonmail-mcp/index.db"
+# excluded_folders = ["Spam"]
+max_body_chars = 10000

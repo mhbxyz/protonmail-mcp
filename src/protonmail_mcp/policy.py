@@ -66,6 +66,14 @@ class SendPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class IndexPolicy:
+    enabled: bool = False
+    path: str = "~/.local/state/protonmail-mcp/index.db"
+    excluded_folders: tuple[str, ...] = ()
+    max_body_chars: int = 10000
+
+
+@dataclass(frozen=True, slots=True)
 class OrganizePolicy:
     max_bulk: int = 50
     protect_drafts: bool = True
@@ -83,6 +91,7 @@ class Policy:
     organize: OrganizePolicy = OrganizePolicy()
     files: FilesPolicy = FilesPolicy()
     send: SendPolicy = SendPolicy()
+    index: IndexPolicy = IndexPolicy()
 
 
 def effective_mode(capabilities: Capabilities) -> str:
@@ -202,6 +211,26 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
     if not isinstance(state_path, str) or not state_path.strip():
         raise PolicyError("policy.toml: send.state_path must be a non-empty string")
 
+    index_table = _table(data, "index")
+    index_enabled = index_table.get("enabled", False)
+    if not isinstance(index_enabled, bool):
+        raise PolicyError("policy.toml: index.enabled must be a boolean")
+    index_path = index_table.get("path", IndexPolicy().path)
+    if not isinstance(index_path, str) or not index_path.strip():
+        raise PolicyError("policy.toml: index.path must be a non-empty string")
+    excluded = index_table.get("excluded_folders", [])
+    if not isinstance(excluded, list) or any(
+        not isinstance(item, str) or not item for item in excluded
+    ):
+        raise PolicyError("policy.toml: index.excluded_folders must be a list of non-empty strings")
+    max_body_chars = index_table.get("max_body_chars", IndexPolicy().max_body_chars)
+    if (
+        isinstance(max_body_chars, bool)
+        or not isinstance(max_body_chars, int)
+        or max_body_chars <= 0
+    ):
+        raise PolicyError("policy.toml: index.max_body_chars must be a positive integer")
+
     return Policy(
         mode=mode,
         capabilities=Capabilities(**flags),
@@ -232,5 +261,11 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
                 "max_message_bytes", SendPolicy().max_message_bytes, minimum=1
             ),
             state_path=state_path,
+        ),
+        index=IndexPolicy(
+            enabled=index_enabled,
+            path=index_path,
+            excluded_folders=tuple(excluded),
+            max_body_chars=max_body_chars,
         ),
     )

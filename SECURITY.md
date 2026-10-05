@@ -125,8 +125,9 @@ contains secrets.
 - **Secrets.** The Bridge mailbox password lives in the MCP client configuration or the
   environment. Prefer client-side indirection (`{env:...}`, `{file:...}`) over inline
   values, and never commit secrets.
-- **Local index (planned).** A plaintext SQLite index is documented as such and stays
-  opt-in.
+- **Local index (opt-in).** `[index] enabled = true` builds a plaintext SQLite FTS5 store
+  of headers and truncated body text (attachments never indexed, folders excludable, body
+  length capped). It never leaves the machine.
 - **Attachments and exports (planned).** Sandbox directory only; never auto-opened.
 
 ## Invariants for any new tool
