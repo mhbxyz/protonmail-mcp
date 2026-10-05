@@ -198,7 +198,8 @@ protection, and a local audit log. Autonomous send/delete will never be the defa
 
 Every push runs gitleaks, zizmor, semgrep, pip-audit, CodeQL, and an adversarial + fuzz
 test suite; see [SECURITY.md](SECURITY.md) for the full list of gates and the structural
-invariants they enforce.
+invariants they enforce. The send milestone is designed in
+[docs/send-design.md](docs/send-design.md) before any send code lands.
 
 ## Alternatives
 
