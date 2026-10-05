@@ -27,3 +27,7 @@ max_bulk = 50
 protect_drafts = true
 # allowed_targets = ["Archive", "Folders/Newsletters"]   # empty = all valid targets
 # label_allowlist = ["Labels/Important"]                  # empty = all Labels/* folders
+
+[files]
+directory = "~/.local/share/protonmail-mcp/files"
+max_bytes = 26214400

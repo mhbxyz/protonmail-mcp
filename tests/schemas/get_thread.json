@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "limit": {
+      "default": 50,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id"
+  ],
+  "title": "get_threadArguments",
+  "type": "object"
+}

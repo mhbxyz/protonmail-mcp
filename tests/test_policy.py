@@ -151,6 +151,25 @@ def test_invalid_organize_values(tmp_path: Path) -> None:
         load_policy(env=env_for(tmp_path))
 
 
+def test_files_defaults_and_overrides(tmp_path: Path) -> None:
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.files.directory == "~/.local/share/protonmail-mcp/files"
+    assert policy.files.max_bytes == 25 * 1024 * 1024
+    write_policy(tmp_path, '[files]\ndirectory = "sandbox"\nmax_bytes = 1024\n')
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.files.directory == "sandbox"
+    assert policy.files.max_bytes == 1024
+
+
+def test_invalid_files_values(tmp_path: Path) -> None:
+    write_policy(tmp_path, '[files]\ndirectory = ""\n')
+    with pytest.raises(PolicyError, match="directory"):
+        load_policy(env=env_for(tmp_path))
+    write_policy(tmp_path, "[files]\nmax_bytes = 0\n")
+    with pytest.raises(PolicyError, match="max_bytes"):
+        load_policy(env=env_for(tmp_path))
+
+
 def test_effective_mode_for_presets_and_custom() -> None:
     assert effective_mode(Capabilities()) == "read"
     assert effective_mode(Capabilities(draft=True)) == "draft"

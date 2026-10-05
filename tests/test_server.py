@@ -3,15 +3,25 @@ from __future__ import annotations
 import asyncio
 import json
 from email import message_from_bytes
+from email.message import EmailMessage as StdEmailMessage
 from email.policy import default as default_policy
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from mcp import Client
 
 from protonmail_mcp.bridge import MailboxError, MessageNotFoundError
-from protonmail_mcp.models import EmailContent, EmailSummary, Folder
-from protonmail_mcp.policy import Capabilities, Policy
+from protonmail_mcp.models import (
+    Attachment,
+    EmailContent,
+    EmailPage,
+    EmailSummary,
+    Folder,
+    FolderStatus,
+)
+from protonmail_mcp.parsing import attachment_parts
+from protonmail_mcp.policy import Capabilities, FilesPolicy, Policy
 from protonmail_mcp.server import build_server, server, set_client
 
 
@@ -27,6 +37,11 @@ class FakeMailbox:
         self.moves: list[tuple[list[str], str, str]] = []
         self.labels_added: list[tuple[list[str], str, str]] = []
         self.labels_removed: list[tuple[list[str], str]] = []
+        self.raw_message: bytes = (
+            b"From: a@b.c\nTo: d@e.f\nSubject: s\nMessage-ID: <raw@test>\n\nbody\n"
+        )
+        self.thread: list[EmailSummary] = []
+        self.attachments: list[Attachment] = []
 
     def list_folders(self) -> list[Folder]:
         return [
@@ -42,16 +57,22 @@ class FakeMailbox:
             Folder(name="Folders/Finance"),
         ]
 
-    def list_emails(self, **kwargs: Any) -> list[EmailSummary]:
-        return [
-            EmailSummary(
-                message_id="<hello@example.com>",
-                folder="INBOX",
-                uid=1,
-                subject="Bonjour",
-                sender="Alice <alice@example.com>",
-            )
-        ]
+    def list_emails(self, **kwargs: Any) -> EmailPage:
+        return EmailPage(
+            folder=kwargs.get("folder", "INBOX"),
+            messages=[
+                EmailSummary(
+                    message_id="<hello@example.com>",
+                    folder="INBOX",
+                    uid=1,
+                    subject="Bonjour",
+                    sender="Alice <alice@example.com>",
+                )
+            ],
+        )
+
+    def get_status(self, folder: str | None = None) -> list[FolderStatus]:
+        return [FolderStatus(name=folder or "INBOX", total=10, unread=3)]
 
     def search_emails(self, query: str, folder: str = "INBOX", limit: int = 20) -> list[EmailSummary]:
         return []
@@ -65,6 +86,7 @@ class FakeMailbox:
             sender="Alice <alice@example.com>",
             recipients="bob@example.com",
             body_text="Original body",
+            attachments=self.attachments,
         )
 
     def close(self) -> None:
@@ -135,6 +157,17 @@ class FakeMailbox:
     def remove_label(self, message_ids: list[str], label: str) -> tuple[list[str], list[str]]:
         self.labels_removed.append((list(message_ids), label))
         return list(message_ids), []
+
+    def get_raw(self, message_id: str, folder: str = "INBOX") -> bytes:
+        return self.raw_message
+
+    def get_attachment_parts(self, message_id: str, folder: str = "INBOX") -> list[Any]:
+        return attachment_parts(self.raw_message)
+
+    def get_thread(
+        self, message_id: str, folder: str = "INBOX", limit: int = 50
+    ) -> list[EmailSummary]:
+        return self.thread
 
 
 class BrokenMailbox(FakeMailbox):
@@ -215,10 +248,13 @@ def test_build_server_registers_read_tools_and_reports_mode() -> None:
     assert {"list_folders", "list_emails", "search_emails", "read_email"} <= names
 
 
-def test_all_tools_are_read_only() -> None:
+def test_all_tools_are_read_only_except_local_export() -> None:
     for tool in list_tools():
         assert tool.annotations is not None
-        assert tool.annotations.read_only_hint is True
+        if tool.name in {"save_attachment", "export_email"}:
+            assert tool.annotations.destructive_hint in (False, None), tool.name
+        else:
+            assert tool.annotations.read_only_hint is True, tool.name
 
 
 def test_list_folders() -> None:
@@ -236,6 +272,26 @@ def test_list_emails_passes_filters() -> None:
     cleanup = with_mailbox(mailbox)
     try:
         result = call("list_emails", {"unread_only": True, "limit": 5})
+    finally:
+        cleanup()
+    assert result.is_error in (False, None)
+    assert "Bonjour" in result.content[0].text
+
+
+def test_get_status() -> None:
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        result = call("get_status", {"folder": "INBOX"})
+    finally:
+        cleanup()
+    assert result.is_error in (False, None)
+    assert "INBOX" in result.content[0].text
+
+
+def test_daily_digest() -> None:
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        result = call("daily_digest", {"days": 2})
     finally:
         cleanup()
     assert result.is_error in (False, None)
@@ -646,6 +702,123 @@ def test_undo_without_moves_is_an_error() -> None:
         cleanup()
     assert result.is_error is True
     assert "no move to undo" in result.content[0].text
+
+
+def sandbox_server(tmp_path: Path) -> Any:
+    policy = Policy(
+        mode="read",
+        capabilities=Capabilities(),
+        confirmation_ttl_seconds=300,
+        source="test",
+        files=FilesPolicy(directory=str(tmp_path / "files"), max_bytes=1024),
+    )
+    return build_server(policy)
+
+
+def raw_with_attachment(filename: str) -> bytes:
+    message = StdEmailMessage()
+    message["From"] = "a@b.c"
+    message["To"] = "d@e.f"
+    message["Subject"] = "s"
+    message.set_content("body")
+    message.add_attachment(
+        b"payload", maintype="application", subtype="octet-stream", filename=filename
+    )
+    return message.as_bytes()
+
+
+def test_export_email_writes_into_sandbox(tmp_path: Path) -> None:
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        first = call_built(
+            sandbox_server(tmp_path), "export_email", {"message_id": "<m@x>"}
+        )
+        second = call_built(
+            sandbox_server(tmp_path), "export_email", {"message_id": "<m@x>"}
+        )
+    finally:
+        cleanup()
+    assert first.is_error in (False, None)
+    payload = tool_payload(first)
+    saved = Path(payload["path"])
+    assert saved.read_bytes() == mailbox.raw_message
+    assert saved.is_relative_to((tmp_path / "files").resolve())
+    assert second.is_error is True
+    assert "overwrite" in second.content[0].text
+
+
+def test_save_attachment_contains_traversal(tmp_path: Path) -> None:
+    mailbox = FakeMailbox()
+    mailbox.raw_message = raw_with_attachment("../../evil.bin")
+    cleanup = with_mailbox(mailbox)
+    try:
+        result = call_built(
+            sandbox_server(tmp_path), "save_attachment", {"message_id": "<m@x>"}
+        )
+    finally:
+        cleanup()
+    assert result.is_error in (False, None)
+    payload = tool_payload(result)
+    assert payload["filename"] == "evil.bin"
+    saved = Path(payload["path"])
+    assert saved.is_relative_to((tmp_path / "files").resolve())
+    assert saved.read_bytes() == b"payload"
+
+
+def test_save_attachment_requires_selection_when_multiple(tmp_path: Path) -> None:
+    mailbox = FakeMailbox()
+    message = StdEmailMessage()
+    message.set_content("body")
+    message.add_attachment(b"1", maintype="application", subtype="pdf", filename="a.pdf")
+    message.add_attachment(b"2", maintype="application", subtype="pdf", filename="b.pdf")
+    mailbox.raw_message = message.as_bytes()
+    cleanup = with_mailbox(mailbox)
+    try:
+        ambiguous = call_built(
+            sandbox_server(tmp_path), "save_attachment", {"message_id": "<m@x>"}
+        )
+        by_name = call_built(
+            sandbox_server(tmp_path),
+            "save_attachment",
+            {"message_id": "<m@x>", "filename": "b.pdf"},
+        )
+    finally:
+        cleanup()
+    assert ambiguous.is_error is True
+    assert "multiple attachments" in ambiguous.content[0].text
+    assert by_name.is_error in (False, None)
+    assert Path(tool_payload(by_name)["path"]).read_bytes() == b"2"
+
+
+def test_list_attachments_metadata(tmp_path: Path) -> None:
+    mailbox = FakeMailbox()
+    mailbox.attachments = [
+        Attachment(filename="x.pdf", content_type="application/pdf", size_bytes=3)
+    ]
+    cleanup = with_mailbox(mailbox)
+    try:
+        result = call_built(
+            sandbox_server(tmp_path), "list_attachments", {"message_id": "<m@x>"}
+        )
+    finally:
+        cleanup()
+    assert result.is_error in (False, None)
+    assert "x.pdf" in result.content[0].text
+
+
+def test_get_thread_tool() -> None:
+    mailbox = FakeMailbox()
+    mailbox.thread = [
+        EmailSummary(message_id="<root@x>", folder="All Mail", uid=1, subject="Root")
+    ]
+    cleanup = with_mailbox(mailbox)
+    try:
+        result = call("get_thread", {"message_id": "<root@x>"})
+    finally:
+        cleanup()
+    assert result.is_error in (False, None)
+    assert "Root" in result.content[0].text
 
 
 def test_create_draft_is_idempotent() -> None:

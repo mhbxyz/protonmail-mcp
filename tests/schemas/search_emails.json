@@ -1,5 +1,17 @@
 {
   "properties": {
+    "before_days": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Before Days"
+    },
     "folder": {
       "default": "INBOX",
       "title": "Folder",
@@ -11,13 +23,64 @@
       "type": "integer"
     },
     "query": {
+      "default": "",
       "title": "Query",
       "type": "string"
+    },
+    "recipient": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Recipient"
+    },
+    "sender": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sender"
+    },
+    "since_days": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Since Days"
+    },
+    "subject": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Subject"
+    },
+    "unread_only": {
+      "default": false,
+      "title": "Unread Only",
+      "type": "boolean"
     }
   },
-  "required": [
-    "query"
-  ],
   "title": "search_emailsArguments",
   "type": "object"
 }

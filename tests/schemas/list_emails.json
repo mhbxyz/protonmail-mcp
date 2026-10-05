@@ -1,5 +1,17 @@
 {
   "properties": {
+    "before": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Before"
+    },
     "folder": {
       "default": "INBOX",
       "title": "Folder",

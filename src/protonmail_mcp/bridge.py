@@ -17,8 +17,15 @@ from imapclient.exceptions import (
 )
 
 from .config import BridgeConfig
-from .models import EmailContent, EmailSummary, Folder
-from .parsing import full_from_message, summary_from_header
+from .models import EmailContent, EmailPage, EmailSummary, Folder, FolderStatus
+from .parsing import (
+    AttachmentPart,
+    attachment_parts,
+    full_from_message,
+    header_message_id,
+    summary_from_header,
+    thread_parent_ids,
+)
 
 T = TypeVar("T")
 
@@ -71,13 +78,154 @@ class BridgeClient:
         since_days: int | None = None,
         sender: str | None = None,
         subject: str | None = None,
-    ) -> list[EmailSummary]:
+        before: str | None = None,
+    ) -> EmailPage:
         criteria = self._list_criteria(unread_only, since_days, sender, subject)
+        return self._fetch_page(folder, criteria, limit, before)
+
+    def get_status(self, folder: str | None = None) -> list[FolderStatus]:
+        if folder is not None:
+            names = [folder]
+        else:
+            names = [item.name for item in self.list_folders() if item.selectable][:100]
+
+        def operation(client: IMAPClient) -> list[FolderStatus]:
+            results: list[FolderStatus] = []
+            for name in names:
+                status = client.folder_status(name, ["MESSAGES", "UNSEEN"])
+                results.append(
+                    FolderStatus(
+                        name=name,
+                        total=int(status.get(b"MESSAGES") or 0),
+                        unread=int(status.get(b"UNSEEN") or 0),
+                    )
+                )
+            return results
+
+        return self._run(operation)
+
+    def search_emails(
+        self,
+        query: str = "",
+        folder: str = "INBOX",
+        limit: int = 20,
+        sender: str | None = None,
+        recipient: str | None = None,
+        subject: str | None = None,
+        since_days: int | None = None,
+        before_days: int | None = None,
+        unread_only: bool = False,
+    ) -> list[EmailSummary]:
+        criteria = self._search_criteria(
+            query, unread_only, since_days, before_days, sender, recipient, subject
+        )
         return self._run(lambda client: self._fetch_summaries(client, folder, criteria, limit))
 
-    def search_emails(self, query: str, folder: str = "INBOX", limit: int = 20) -> list[EmailSummary]:
-        criteria: list[Any] = ["TEXT", query]
-        return self._run(lambda client: self._fetch_summaries(client, folder, criteria, limit))
+    def get_raw(self, message_id: str, folder: str = "INBOX") -> bytes:
+        def operation(client: IMAPClient) -> bytes:
+            client.select_folder(folder, readonly=True)
+            uids = client.search(["HEADER", "Message-ID", message_id])
+            if not uids:
+                raise MessageNotFoundError(
+                    f"No message with Message-ID {message_id!r} in folder {folder!r}"
+                )
+            uid = max(uids)
+            item = self._fetch_body_guarded(
+                client, uid, f"Message {message_id!r} vanished while fetching"
+            )
+            return _as_bytes(item.get(b"BODY[]"))
+
+        return self._run(operation)
+
+    def get_attachment_parts(
+        self, message_id: str, folder: str = "INBOX"
+    ) -> list[AttachmentPart]:
+        return attachment_parts(self.get_raw(message_id, folder))
+
+    def get_thread(
+        self,
+        message_id: str,
+        folder: str = "INBOX",
+        limit: int = 50,
+    ) -> list[EmailSummary]:
+        all_mail = self.folder_by_flag("\\All") or folder
+
+        def fetch_header(client: IMAPClient, mid: str) -> bytes | None:
+            client.select_folder(all_mail, readonly=True)
+            uids = client.search(["HEADER", "Message-ID", mid])
+            if not uids:
+                return None
+            uid = uids[-1]
+            response = client.fetch(
+                [uid], ["FLAGS", "RFC822.SIZE", "RFC822.HEADER", "INTERNALDATE"]
+            )
+            item = response.get(uid)
+            if not item:
+                return None
+            return _as_bytes(item.get(b"RFC822.HEADER"))
+
+        def summary_for(client: IMAPClient, header: bytes) -> EmailSummary | None:
+            client.select_folder(all_mail, readonly=True)
+            mid = header_message_id(header)
+            if not mid:
+                return None
+            uids = client.search(["HEADER", "Message-ID", mid])
+            if not uids:
+                return None
+            uid = uids[-1]
+            response = client.fetch(
+                [uid], ["FLAGS", "RFC822.SIZE", "RFC822.HEADER", "INTERNALDATE"]
+            )
+            item = response.get(uid)
+            if not item:
+                return None
+            return summary_from_header(
+                header,
+                uid=uid,
+                folder=all_mail,
+                flags=self._flags(item),
+                size=int(item.get(b"RFC822.SIZE") or 0),
+                received=_internaldate(item),
+            )
+
+        def child_ids(client: IMAPClient, mid: str) -> list[str]:
+            found: list[str] = []
+            for criteria in (["HEADER", "In-Reply-To", mid], ["HEADER", "References", mid]):
+                client.select_folder(all_mail, readonly=True)
+                for uid in client.search(criteria):
+                    response = client.fetch([uid], ["RFC822.HEADER"])
+                    item = response.get(uid)
+                    if not item:
+                        continue
+                    child = header_message_id(_as_bytes(item.get(b"RFC822.HEADER")))
+                    if child and child not in found:
+                        found.append(child)
+            return found
+
+        def operation(client: IMAPClient) -> list[EmailSummary]:
+            collected: dict[str, EmailSummary] = {}
+            queue = [message_id]
+            seen: set[str] = set()
+            while queue and len(collected) < limit:
+                current = queue.pop(0)
+                if current in seen:
+                    continue
+                seen.add(current)
+                header = fetch_header(client, current)
+                if header is not None:
+                    summary = summary_for(client, header)
+                    if summary is not None and summary.message_id:
+                        collected[summary.message_id] = summary
+                    for parent in thread_parent_ids(header):
+                        if parent not in seen:
+                            queue.append(parent)
+                for child in child_ids(client, current):
+                    if child not in seen:
+                        queue.append(child)
+            summaries = sorted(collected.values(), key=lambda item: item.received)
+            return summaries[:limit]
+
+        return self._run(operation)
 
     def get_message(self, message_id: str, folder: str = "INBOX", max_chars: int = 20000) -> EmailContent:
         def operation(client: IMAPClient) -> EmailContent:
@@ -111,7 +259,7 @@ class BridgeClient:
         return "Drafts"
 
     def list_drafts(self, limit: int = 20) -> list[EmailSummary]:
-        return self.list_emails(folder=self.find_drafts_folder(), limit=limit)
+        return self.list_emails(folder=self.find_drafts_folder(), limit=limit).messages
 
     def get_draft(self, uid: int, max_chars: int = 20000) -> EmailContent:
         folder = self.find_drafts_folder()
@@ -316,6 +464,33 @@ class BridgeClient:
             criteria.extend(["SUBJECT", subject])
         return criteria
 
+    @staticmethod
+    def _search_criteria(
+        query: str,
+        unread_only: bool,
+        since_days: int | None,
+        before_days: int | None,
+        sender: str | None,
+        recipient: str | None,
+        subject: str | None,
+    ) -> list[Any]:
+        criteria: list[Any] = []
+        if unread_only:
+            criteria.append("UNSEEN")
+        if query:
+            criteria.extend(["TEXT", query])
+        if sender:
+            criteria.extend(["FROM", sender])
+        if recipient:
+            criteria.extend(["TO", recipient])
+        if subject:
+            criteria.extend(["SUBJECT", subject])
+        if since_days is not None:
+            criteria.extend(["SINCE", date.today() - timedelta(days=int(since_days))])
+        if before_days is not None:
+            criteria.extend(["BEFORE", date.today() - timedelta(days=int(before_days))])
+        return criteria or ["ALL"]
+
     def _fetch_summaries(
         self,
         client: IMAPClient,
@@ -325,10 +500,48 @@ class BridgeClient:
     ) -> list[EmailSummary]:
         client.select_folder(folder, readonly=True)
         uids = client.search(criteria)
-        selected = uids[:limit]
+        return self._summaries_for(client, uids[:limit], folder)
+
+    def _fetch_page(
+        self,
+        folder: str,
+        criteria: Sequence[Any],
+        limit: int,
+        before: str | None,
+    ) -> EmailPage:
+        def operation(client: IMAPClient) -> EmailPage:
+            client.select_folder(folder, readonly=True)
+            uids = client.search(criteria)
+            start = 0
+            if before is not None:
+                try:
+                    before_uid = int(before)
+                except ValueError as exc:
+                    raise MailboxError(f"invalid pagination cursor {before!r}") from exc
+                if before_uid not in uids:
+                    raise MailboxError(
+                        "pagination cursor is no longer valid; restart from the first page"
+                    )
+                start = uids.index(before_uid) + 1
+            selected = uids[start : start + limit]
+            has_more = bool(uids[start + limit :])
+            summaries = self._summaries_for(client, selected, folder)
+            next_cursor = str(selected[-1]) if has_more and selected else None
+            return EmailPage(folder=folder, messages=summaries, next_cursor=next_cursor)
+
+        return self._run(operation)
+
+    def _summaries_for(
+        self,
+        client: IMAPClient,
+        selected: Sequence[int],
+        folder: str,
+    ) -> list[EmailSummary]:
         if not selected:
             return []
-        response = client.fetch(selected, ["FLAGS", "RFC822.SIZE", "RFC822.HEADER", "INTERNALDATE"])
+        response = client.fetch(
+            list(selected), ["FLAGS", "RFC822.SIZE", "RFC822.HEADER", "INTERNALDATE"]
+        )
         summaries: list[EmailSummary] = []
         for uid in selected:
             item = response.get(uid)

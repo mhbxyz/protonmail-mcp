@@ -37,6 +37,10 @@ class EmailContent(EmailSummary):
     reply_to: str = ""
     references: str = ""
     body_text: str = ""
+    body_markdown: str = ""
+    links: list[str] = Field(default_factory=list)
+    quoted_removed: bool = False
+    content_trust: str = "untrusted"
     truncated: bool = False
     attachments: list[Attachment] = Field(default_factory=list)
 
@@ -63,6 +67,33 @@ class OrganizeResult(BaseModel):
     destination: str = ""
     updated: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)
+
+
+class FolderStatus(BaseModel):
+    name: str
+    total: int = 0
+    unread: int = 0
+
+
+class EmailPage(BaseModel):
+    folder: str
+    messages: list[EmailSummary] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class Digest(BaseModel):
+    folder: str
+    since_days: int
+    unread: int
+    total_recent: int
+    messages: list[EmailSummary] = Field(default_factory=list)
+
+
+class SavedFile(BaseModel):
+    filename: str
+    path: str
+    size_bytes: int
+    content_type: str = ""
 
 
 class DraftDeleted(BaseModel):

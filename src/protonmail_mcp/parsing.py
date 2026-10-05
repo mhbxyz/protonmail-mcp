@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from email import message_from_bytes
 from email.header import decode_header
 from email.message import Message
@@ -73,6 +74,95 @@ def html_to_text(html: str) -> str:
     parser.feed(html)
     parser.close()
     return parser.text()
+
+
+class _HtmlToMarkdown(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+        self._link_stack: list[str | None] = []
+        self._link_text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if tag == "a":
+            href = dict(attrs).get("href") or ""
+            self._link_stack.append(href or None)
+            self._link_text.append("")
+        elif tag == "li":
+            self._parts.append("\n- ")
+        elif tag == "br" or tag in _BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if tag == "a" and self._link_stack:
+            href = self._link_stack.pop()
+            text = self._link_text.pop()
+            if href and text.strip():
+                self._parts.append(f"[{text.strip()}]({href})")
+            else:
+                self._parts.append(text)
+        elif tag in _BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        if self._link_stack:
+            self._link_text[-1] += data
+        else:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        joined = "".join(self._parts)
+        collapsed = _BLANK_LINES.sub("\n\n", joined)
+        return _TRAILING_SPACES.sub("\n", collapsed).strip()
+
+
+def html_to_markdown(html: str) -> str:
+    parser = _HtmlToMarkdown()
+    parser.feed(html)
+    parser.close()
+    return parser.text()
+
+
+_URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
+_HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+
+
+def extract_links(text: str = "", html: str = "") -> list[str]:
+    links: list[str] = []
+    links.extend(match.group(1) for match in _HREF_RE.finditer(html or ""))
+    links.extend(match.group(0) for match in _URL_RE.finditer(text or ""))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for link in links:
+        if link not in seen:
+            seen.add(link)
+            unique.append(link)
+    return unique
+
+
+_ATTRIBUTION = re.compile(r"^\s*(On .+wrote:|Le .+ a écrit\s*:|El .+ escribió:)", re.IGNORECASE)
+_SIGNATURE = re.compile(r"^\s*--\s*$")
+_QUOTED_LINE = re.compile(r"^\s*>")
+
+
+def strip_quoted(text: str) -> tuple[str, bool]:
+    kept: list[str] = []
+    removed = False
+    for line in text.splitlines():
+        if _QUOTED_LINE.match(line) or _ATTRIBUTION.match(line) or _SIGNATURE.match(line):
+            removed = True
+            break
+        kept.append(line)
+    return "\n".join(kept).strip(), removed
 
 
 def header_value(message: Message, name: str) -> str:
@@ -152,22 +242,84 @@ def _part_text(part: Message) -> str:
     return payload.decode(charset, errors="replace")
 
 
-def extract_body(message: Message) -> str:
-    plain: Message | None = None
-    html: Message | None = None
+def extract_bodies(message: Message) -> tuple[str, str]:
+    plain = ""
+    html = ""
     for part in message.walk():
         if part.is_multipart() or _is_attachment(part):
             continue
         content_type = part.get_content_type()
-        if content_type == "text/plain" and plain is None:
-            plain = part
-        elif content_type == "text/html" and html is None:
-            html = part
-    if plain is not None:
-        return _part_text(plain)
-    if html is not None:
-        return html_to_text(_part_text(html))
+        if content_type == "text/plain" and not plain:
+            plain = _part_text(part)
+        elif content_type == "text/html" and not html:
+            html = _part_text(part)
+    return plain, html
+
+
+def extract_body(message: Message) -> str:
+    plain, html = extract_bodies(message)
+    if plain:
+        return plain
+    if html:
+        return html_to_text(html)
     return ""
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentPart:
+    filename: str
+    content_type: str
+    data: bytes
+
+
+def extract_attachment_parts(message: Message) -> list[AttachmentPart]:
+    parts: list[AttachmentPart] = []
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        filename = part.get_filename()
+        if not filename and not _is_attachment(part):
+            continue
+        payload = part.get_payload(decode=True)
+        parts.append(
+            AttachmentPart(
+                filename=filename or "(unnamed)",
+                content_type=part.get_content_type(),
+                data=payload if isinstance(payload, bytes) else b"",
+            )
+        )
+    return parts
+
+
+def attachment_parts(raw: bytes) -> list[AttachmentPart]:
+    return extract_attachment_parts(message_from_bytes(raw, policy=default_policy))
+
+
+_MESSAGE_ID_RE = re.compile(r"<[^<>\s]+>")
+
+
+def _normalize_message_ids(value: str) -> list[str]:
+    ids = _MESSAGE_ID_RE.findall(value)
+    if not ids:
+        ids = [part for part in value.split() if "@" in part]
+    return [item if item.startswith("<") else f"<{item}>" for item in ids]
+
+
+def thread_parent_ids(raw_header: bytes) -> list[str]:
+    message = message_from_bytes(raw_header, policy=default_policy)
+    ids = _normalize_message_ids(header_value(message, "References"))
+    ids.extend(_normalize_message_ids(header_value(message, "In-Reply-To")))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for message_id in ids:
+        if message_id not in seen:
+            seen.add(message_id)
+            unique.append(message_id)
+    return unique
+
+
+def header_message_id(raw_header: bytes) -> str:
+    return header_value(message_from_bytes(raw_header, policy=default_policy), "Message-ID")
 
 
 def extract_attachments(message: Message) -> list[Attachment]:
@@ -231,7 +383,10 @@ def full_from_message(
     received: str = "",
 ) -> EmailContent:
     message = message_from_bytes(raw, policy=default_policy)
-    body, truncated = truncate(extract_body(message), max_chars)
+    plain, html = extract_bodies(message)
+    base = plain if plain else html_to_text(html)
+    stripped, quoted_removed = strip_quoted(base)
+    body, truncated = truncate(stripped, max_chars)
     return EmailContent(
         message_id=header_value(message, "Message-ID"),
         folder=folder,
@@ -248,6 +403,9 @@ def full_from_message(
         reply_to=address_header(message, "Reply-To"),
         references=header_value(message, "References"),
         body_text=body,
+        body_markdown=html_to_markdown(html) if html else "",
+        links=extract_links(text=base, html=html),
+        quoted_removed=quoted_removed,
         truncated=truncated,
         attachments=extract_attachments(message),
     )

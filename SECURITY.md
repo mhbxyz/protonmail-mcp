@@ -131,7 +131,8 @@ contains secrets.
 ## Invariants for any new tool
 
 1. It belongs to exactly one capability; a disabled capability means the tool is absent.
-2. It is read-only, or it is prepare/commit with payload-bound tokens.
+2. It is read-only, or it is prepare/commit with payload-bound tokens. Local file writes
+   are confined to the configured sandbox directory and never touch the mailbox.
 3. It accepts no arbitrary filesystem paths.
 4. It makes no network access beyond the local Bridge.
 5. It is audited, credited with accurate MCP annotations, and covered by adversarial tests.

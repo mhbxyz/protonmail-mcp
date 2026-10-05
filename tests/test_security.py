@@ -10,11 +10,22 @@ from mcp import Client
 from protonmail_mcp.bridge import BridgeClient
 from protonmail_mcp.config import BridgeConfig
 from protonmail_mcp.confirmations import ConfirmationError, ConfirmationManager
-from protonmail_mcp.models import EmailContent, Folder
+from protonmail_mcp.models import EmailContent, EmailPage, Folder, FolderStatus
 from protonmail_mcp.policy import Capabilities, Policy
 from protonmail_mcp.server import build_server, set_client
 
-READ_TOOLS = {"list_folders", "list_emails", "search_emails", "read_email"}
+READ_ONLY_TOOLS = {
+    "list_folders",
+    "list_emails",
+    "search_emails",
+    "read_email",
+    "get_status",
+    "daily_digest",
+    "get_thread",
+    "list_attachments",
+}
+LOCAL_WRITE_TOOLS = {"save_attachment", "export_email"}
+ALWAYS_TOOLS = READ_ONLY_TOOLS | LOCAL_WRITE_TOOLS
 DRAFT_TOOLS = {
     "list_drafts",
     "create_draft",
@@ -56,21 +67,21 @@ def tools_of(capabilities: Capabilities) -> dict[str, Any]:
 
 def test_capability_matrix_exposes_exact_tools() -> None:
     cases = {
-        "read": (Capabilities(), READ_TOOLS),
-        "draft": (Capabilities(draft=True), READ_TOOLS | DRAFT_TOOLS),
+        "read": (Capabilities(), ALWAYS_TOOLS),
+        "draft": (Capabilities(draft=True), ALWAYS_TOOLS | DRAFT_TOOLS),
         "organize": (
             Capabilities(draft=True, organize=True),
-            READ_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
+            ALWAYS_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
         ),
         "send": (
             Capabilities(draft=True, organize=True, send=True),
-            READ_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
+            ALWAYS_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
         ),
         "delete": (
             Capabilities(True, True, True, True),
-            READ_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
+            ALWAYS_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
         ),
-        "organize_only": (Capabilities(organize=True), READ_TOOLS | ORGANIZE_TOOLS),
+        "organize_only": (Capabilities(organize=True), ALWAYS_TOOLS | ORGANIZE_TOOLS),
     }
     for name, (capabilities, expected) in cases.items():
         assert set(tools_of(capabilities)) == expected, name
@@ -98,10 +109,19 @@ def test_prepare_commit_pairs_are_complete() -> None:
 
 
 def test_read_tools_are_annotated_read_only() -> None:
-    tools = tools_of(Capabilities(draft=True))
-    for name in READ_TOOLS | {"list_drafts"}:
+    tools = tools_of(Capabilities(True, True, True, True))
+    for name in READ_ONLY_TOOLS | {"list_drafts"}:
         assert tools[name].annotations is not None
         assert tools[name].annotations.read_only_hint is True, name
+
+
+def test_local_write_tools_are_not_destructive() -> None:
+    tools = tools_of(Capabilities(True, True, True, True))
+    for name in LOCAL_WRITE_TOOLS:
+        annotations = tools[name].annotations
+        assert annotations is not None
+        assert annotations.read_only_hint is False
+        assert annotations.destructive_hint in (False, None), name
 
 
 def test_tokens_have_sufficient_entropy() -> None:
@@ -201,8 +221,11 @@ class StrictReadMailbox:
     def list_folders(self) -> list[Folder]:
         return [Folder(name="INBOX")]
 
-    def list_emails(self, **kwargs: Any) -> list[Any]:
-        return []
+    def list_emails(self, **kwargs: Any) -> EmailPage:
+        return EmailPage(folder="INBOX")
+
+    def get_status(self, folder: str | None = None) -> list[FolderStatus]:
+        return [FolderStatus(name="INBOX")]
 
     def search_emails(self, *args: Any, **kwargs: Any) -> list[Any]:
         return []

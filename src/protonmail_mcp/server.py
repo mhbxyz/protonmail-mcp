@@ -30,21 +30,31 @@ from .confirmations import (
     PreparedConfirmation,
     payload_digest,
 )
+from .files import SandboxError, sandbox_directory, write_in_sandbox
 from .idempotency import DraftReference, IdempotencyStore
 from .journal import MoveEntry, MoveJournal
 from .models import (
+    Attachment,
+    Digest,
     DraftCreated,
     DraftDeleted,
     DraftPreview,
     EmailContent,
+    EmailPage,
     EmailSummary,
     Folder,
+    FolderStatus,
     OrganizeResult,
     PreparedAction,
+    SavedFile,
 )
+from .parsing import AttachmentPart
 from .policy import Policy, load_policy
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
+LOCAL_WRITE = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False
+)
 WRITE_ACTION = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=False
 )
@@ -306,6 +316,29 @@ def _undo_payload(entry_id: int) -> dict[str, Any]:
     return {"action": "undo_move", "entry_id": entry_id}
 
 
+def _select_attachment(
+    parts: Sequence[AttachmentPart],
+    filename: str | None,
+    index: int | None,
+) -> AttachmentPart:
+    if index is not None:
+        if index < 0 or index >= len(parts):
+            raise SandboxError(f"attachment index {index} out of range (0-{len(parts) - 1})")
+        return parts[index]
+    if filename is not None:
+        matches = [part for part in parts if part.filename == filename]
+        if not matches:
+            names = ", ".join(repr(part.filename) for part in parts)
+            raise SandboxError(f"no attachment named {filename!r}; available: {names}")
+        if len(matches) > 1:
+            raise SandboxError(f"multiple attachments named {filename!r}; pass an index")
+        return matches[0]
+    if len(parts) == 1:
+        return parts[0]
+    names = ", ".join(repr(part.filename) for part in parts)
+    raise SandboxError(f"multiple attachments; pass filename or index: {names}")
+
+
 def _undo_preview(entry: MoveEntry) -> PreparedAction:
     preview = {
         "action": "undo_move",
@@ -373,7 +406,8 @@ def build_server(policy: Policy) -> MCPServer:
         since_days: int | None = None,
         sender: str | None = None,
         subject: str | None = None,
-    ) -> list[EmailSummary]:
+        before: str | None = None,
+    ) -> EmailPage:
         """List the most recent messages of a folder, newest first.
 
         Args:
@@ -383,6 +417,7 @@ def build_server(policy: Policy) -> MCPServer:
             since_days: Only return messages from the last N days when set.
             sender: Only return messages whose From header contains this text.
             subject: Only return messages whose Subject header contains this text.
+            before: Cursor from a previous page's next_cursor to continue listing.
         """
         try:
             return get_client().list_emails(
@@ -392,22 +427,49 @@ def build_server(policy: Policy) -> MCPServer:
                 since_days=since_days,
                 sender=sender,
                 subject=subject,
+                before=before,
             )
         except (ConfigError, MailboxError) as exc:
             raise _guard(exc) from exc
 
     @server.tool(annotations=READ_ONLY)
     @_audited("search_emails")
-    def search_emails(query: str, folder: str = "INBOX", limit: int = 20) -> list[EmailSummary]:
-        """Search messages whose headers or body contain a text query, newest first.
+    def search_emails(
+        query: str = "",
+        folder: str = "INBOX",
+        limit: int = 20,
+        sender: str | None = None,
+        recipient: str | None = None,
+        subject: str | None = None,
+        since_days: int | None = None,
+        before_days: int | None = None,
+        unread_only: bool = False,
+    ) -> list[EmailSummary]:
+        """Search messages, newest first. All filters combine with AND.
 
         Args:
-            query: Text to search for across headers and body.
+            query: Full-text across headers and body; empty matches everything.
             folder: Folder or label name to search in, as returned by list_folders.
             limit: Maximum number of messages to return (1-100).
+            sender: Substring match on the From header.
+            recipient: Substring match on the To header.
+            subject: Substring match on the Subject header.
+            since_days: Only messages received in the last N days.
+            before_days: Only messages received before N days ago.
+            unread_only: Only unread messages when true.
         """
         try:
-            return get_client().search_emails(query, folder=folder, limit=_clamp(limit))
+            return get_client().search_emails(
+                query,
+                folder=folder,
+                limit=_clamp(limit),
+                sender=sender,
+                recipient=recipient,
+                subject=subject,
+                since_days=since_days,
+                before_days=before_days,
+                unread_only=unread_only,
+            )
         except (ConfigError, MailboxError) as exc:
             raise _guard(exc) from exc
 
@@ -427,6 +489,153 @@ def build_server(policy: Policy) -> MCPServer:
         except MessageNotFoundError as exc:
             raise ToolError(f"{exc}. Try list_folders to find the right folder.") from exc
         except (ConfigError, MailboxError) as exc:
+            raise _guard(exc) from exc
+
+    @server.tool(annotations=READ_ONLY)
+    @_audited("get_status")
+    def get_status(folder: str | None = None) -> list[FolderStatus]:
+        """Counts of total and unread messages per folder, without fetching messages.
+
+        Args:
+            folder: A single folder name, or omit to get every selectable folder.
+        """
+        try:
+            return get_client().get_status(folder)
+        except (ConfigError, MailboxError) as exc:
+            raise _guard(exc) from exc
+
+    @server.tool(annotations=READ_ONLY)
+    @_audited("daily_digest")
+    def daily_digest(folder: str = "INBOX", days: int = 1, limit: int = 20) -> Digest:
+        """Compact digest of a folder: unread count plus recent message summaries
+        (subjects and senders only, no bodies).
+
+        Args:
+            folder: Folder to summarize.
+            days: Window in days (default 1).
+            limit: Maximum messages in the digest (1-100).
+        """
+        try:
+            client = get_client()
+            statuses = client.get_status(folder)
+            page = client.list_emails(
+                folder=folder, limit=_clamp(limit), since_days=max(0, int(days))
+            )
+            return Digest(
+                folder=folder,
+                since_days=max(0, int(days)),
+                unread=statuses[0].unread if statuses else 0,
+                total_recent=len(page.messages),
+                messages=page.messages,
+            )
+        except (ConfigError, MailboxError) as exc:
+            raise _guard(exc) from exc
+
+    @server.tool(annotations=READ_ONLY)
+    @_audited("get_thread")
+    def get_thread(message_id: str, folder: str = "INBOX", limit: int = 50) -> list[EmailSummary]:
+        """Reconstruct a conversation around a message using References/In-Reply-To,
+        searching All Mail. Returns messages in chronological order.
+
+        Args:
+            message_id: Message-ID of any message in the thread.
+            folder: Folder containing that message (used as a fallback if All Mail is absent).
+            limit: Maximum messages in the thread (1-100).
+        """
+        try:
+            return get_client().get_thread(message_id, folder=folder, limit=_clamp(limit))
+        except (ConfigError, MailboxError) as exc:
+            raise _guard(exc) from exc
+
+    @server.tool(annotations=READ_ONLY)
+    @_audited("list_attachments")
+    def list_attachments(message_id: str, folder: str = "INBOX") -> list[Attachment]:
+        """List a message's attachments (names, content types, sizes) without saving
+        anything to disk.
+
+        Args:
+            message_id: Message-ID of the message.
+            folder: Folder containing the message.
+        """
+        try:
+            return get_client().get_message(message_id, folder=folder, max_chars=0).attachments
+        except MessageNotFoundError as exc:
+            raise ToolError(f"{exc}. Try list_folders to find the right folder.") from exc
+        except (ConfigError, MailboxError) as exc:
+            raise _guard(exc) from exc
+
+    @server.tool(annotations=LOCAL_WRITE)
+    @_audited("save_attachment")
+    def save_attachment(
+        message_id: str,
+        folder: str = "INBOX",
+        filename: str | None = None,
+        index: int | None = None,
+    ) -> SavedFile:
+        """Save one attachment into the local sandbox directory. Files are never
+        overwritten and never leave the sandbox.
+
+        Args:
+            message_id: Message-ID of the message.
+            folder: Folder containing the message.
+            filename: Exact attachment filename; omit when the message has exactly one.
+            index: Attachment position (0-based) when filenames are ambiguous.
+        """
+        try:
+            client = get_client()
+            parts = client.get_attachment_parts(message_id, folder=folder)
+            if not parts:
+                raise SandboxError("this message has no attachments")
+            part = _select_attachment(parts, filename, index)
+            stored = write_in_sandbox(
+                sandbox_directory(policy),
+                part.filename,
+                part.data,
+                max_bytes=policy.files.max_bytes,
+            )
+            return SavedFile(
+                filename=stored.filename,
+                path=stored.path,
+                size_bytes=stored.size_bytes,
+                content_type=part.content_type,
+            )
+        except MessageNotFoundError as exc:
+            raise ToolError(f"{exc}. Try list_folders to find the right folder.") from exc
+        except (ConfigError, MailboxError, SandboxError) as exc:
+            raise _guard(exc) from exc
+
+    @server.tool(annotations=LOCAL_WRITE)
+    @_audited("export_email")
+    def export_email(
+        message_id: str,
+        folder: str = "INBOX",
+        filename: str | None = None,
+    ) -> SavedFile:
+        """Export a full message as .eml into the local sandbox directory.
+
+        Args:
+            message_id: Message-ID of the message.
+            folder: Folder containing the message.
+            filename: Optional target filename; defaults to the Message-ID plus .eml.
+        """
+        try:
+            raw = get_client().get_raw(message_id, folder=folder)
+            name = filename if filename else f"{message_id.strip('<>') or 'message'}.eml"
+            stored = write_in_sandbox(
+                sandbox_directory(policy),
+                name,
+                raw,
+                max_bytes=policy.files.max_bytes,
+            )
+            return SavedFile(
+                filename=stored.filename,
+                path=stored.path,
+                size_bytes=stored.size_bytes,
+                content_type="message/rfc822",
+            )
+        except MessageNotFoundError as exc:
+            raise ToolError(f"{exc}. Try list_folders to find the right folder.") from exc
+        except (ConfigError, MailboxError, SandboxError) as exc:
             raise _guard(exc) from exc
 
     if capabilities.draft:

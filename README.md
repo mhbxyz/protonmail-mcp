@@ -28,9 +28,15 @@ are on the [roadmap](ROADMAP.md), each gated behind the controls described in
 | Tool | Description |
 |---|---|
 | `list_folders` | List every folder and label, with IMAP flags and whether it is selectable |
-| `list_emails` | Most recent messages in a folder, newest first: `limit`, `unread_only`, `since_days`, `sender`, `subject` |
-| `search_emails` | Full-text search across headers and body in a folder |
-| `read_email` | Read one message by `Message-ID`: decoded text body, attachments, flags, truncation via `max_chars` |
+| `get_status` | Total and unread counts per folder, without fetching messages |
+| `list_emails` | Most recent messages in a folder, newest first, with a pagination cursor: `limit`, `unread_only`, `since_days`, `sender`, `subject`, `before` |
+| `search_emails` | Structured search: `query` (full-text) plus `sender`, `recipient`, `subject`, `since_days`, `before_days`, `unread_only` |
+| `read_email` | Read one message by `Message-ID`: decoded body (quotes/signature stripped, `quoted_removed` flag), optional HTML→Markdown, link inventory, untrusted-content marker |
+| `get_thread` | Reconstruct a conversation across All Mail using References/In-Reply-To |
+| `daily_digest` | Unread count plus compact recent-message summaries for a folder |
+| `list_attachments` | Attachment names, types and sizes without saving anything |
+| `save_attachment` | Save one attachment into the local sandbox (traversal-safe, size-capped, never overwrites) |
+| `export_email` | Export a message as `.eml` into the local sandbox |
 
 When the `draft` capability is enabled (see [Capability policy](#capability-policy)),
 additional tools are registered: `list_drafts`, `create_draft`, `preview_draft` (renders
@@ -110,6 +116,10 @@ max_bulk = 50
 protect_drafts = true
 # allowed_targets = ["Archive", "Folders/Newsletters"]
 # label_allowlist = ["Labels/Important"]
+
+[files]
+directory = "~/.local/share/protonmail-mcp/files"
+max_bytes = 26214400
 ```
 
 See [SECURITY.md](SECURITY.md) for the confirmation flow and [ROADMAP.md](ROADMAP.md) for

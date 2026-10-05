@@ -1,0 +1,21 @@
+{
+  "properties": {
+    "days": {
+      "default": 1,
+      "title": "Days",
+      "type": "integer"
+    },
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "title": "daily_digestArguments",
+  "type": "object"
+}

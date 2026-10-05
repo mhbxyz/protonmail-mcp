@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from email import message_from_bytes
+from email.policy import default as default_policy
 from typing import Any
 
 import pytest
@@ -139,8 +141,11 @@ def test_list_emails_uses_readonly_and_newest_first() -> None:
         },
     )
     client = attach(BridgeClient(make_config()), fake)
-    emails = client.list_emails(limit=2)
+    page = client.list_emails(limit=2)
+    emails = page.messages
     assert [email.uid for email in emails] == [1, 2]
+    assert page.folder == "INBOX"
+    assert page.next_cursor == "2"
     assert fake.selected == ("INBOX", True)
     assert emails[0].unread is False
     assert emails[1].unread is True
@@ -155,7 +160,7 @@ def test_list_emails_sorts_by_receive_date() -> None:
             2: {b"RFC822.HEADER": HEADER, b"INTERNALDATE": datetime(2026, 10, 3, 9, 0)},
         },
     )
-    emails = attach(BridgeClient(make_config()), fake).list_emails(limit=2)
+    emails = attach(BridgeClient(make_config()), fake).list_emails(limit=2).messages
     assert [email.uid for email in emails] == [2, 1]
 
 
@@ -413,3 +418,153 @@ def test_remove_label_reports_missing() -> None:
     updated, missing = client.remove_label(["<m@x>"], "Labels/To pay")
     assert updated == []
     assert missing == ["<m@x>"]
+
+
+def test_list_emails_pagination_cursor() -> None:
+    fake = FakeIMAPClient(
+        search_results=[1, 2, 3, 4],
+        fetch_results={
+            uid: {
+                b"FLAGS": (),
+                b"RFC822.SIZE": 10,
+                b"RFC822.HEADER": HEADER,
+                b"INTERNALDATE": datetime(2026, 10, 10 - uid, 9, 0),
+            }
+            for uid in (1, 2, 3, 4)
+        },
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    first = client.list_emails(limit=2)
+    assert [message.uid for message in first.messages] == [1, 2]
+    assert first.next_cursor == "2"
+    second = client.list_emails(limit=2, before="2")
+    assert [message.uid for message in second.messages] == [3, 4]
+    assert second.next_cursor is None
+
+
+def test_list_emails_rejects_invalid_cursor() -> None:
+    fake = FakeIMAPClient(search_results=[1, 2])
+    client = attach(BridgeClient(make_config()), fake)
+    with pytest.raises(MailboxError, match="cursor"):
+        client.list_emails(before="99")
+    with pytest.raises(MailboxError, match="invalid pagination cursor"):
+        client.list_emails(before="abc")
+
+
+def test_get_status_single_folder() -> None:
+    class StatusFake(FakeIMAPClient):
+        def folder_status(self, folder: str, what: Any = None) -> dict[bytes, int]:
+            return {b"MESSAGES": 12, b"UNSEEN": 3}
+
+    client = attach(BridgeClient(make_config()), StatusFake())
+    statuses = client.get_status("INBOX")
+    assert statuses[0].name == "INBOX"
+    assert statuses[0].total == 12
+    assert statuses[0].unread == 3
+
+
+def test_get_status_all_folders_skips_unselectable() -> None:
+    class StatusFake(FakeIMAPClient):
+        def folder_status(self, folder: str, what: Any = None) -> dict[bytes, int]:
+            return {b"MESSAGES": 1, b"UNSEEN": 0}
+
+    folders = [
+        ((b"\\HasNoChildren",), b"/", "INBOX"),
+        ((b"\\Noselect",), b"/", "Folders"),
+    ]
+    client = attach(BridgeClient(make_config()), StatusFake(folders=folders))
+    statuses = client.get_status()
+    assert [status.name for status in statuses] == ["INBOX"]
+
+
+def test_search_criteria_combination() -> None:
+    criteria = BridgeClient._search_criteria(
+        "invoice", True, 7, 2, "a@b.c", "d@e.f", "facture"
+    )
+    assert criteria == [
+        "UNSEEN",
+        "TEXT",
+        "invoice",
+        "FROM",
+        "a@b.c",
+        "TO",
+        "d@e.f",
+        "SUBJECT",
+        "facture",
+        "SINCE",
+        date.today() - timedelta(days=7),
+        "BEFORE",
+        date.today() - timedelta(days=2),
+    ]
+    assert BridgeClient._search_criteria("", False, None, None, None, None, None) == ["ALL"]
+
+
+def test_get_raw_returns_full_message() -> None:
+    fake = FakeIMAPClient(
+        search_results=[9],
+        fetch_results={9: {b"RFC822.SIZE": 10, b"BODY[]": HEADER + b"Corps.\n"}},
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    assert client.get_raw("<hello@example.com>") == HEADER + b"Corps.\n"
+
+
+class ThreadFake:
+    def __init__(self, messages: dict[int, bytes]) -> None:
+        self.messages = messages
+        self.selected: str | None = None
+
+    def list_folders(self) -> list[tuple[Any, Any, str]]:
+        return []
+
+    def select_folder(self, folder: str, readonly: bool = False) -> dict[str, Any]:
+        self.selected = folder
+        return {}
+
+    def search(self, criteria: Any) -> list[int]:
+        field, value = criteria[1], criteria[2]
+        found: list[int] = []
+        for uid, header in self.messages.items():
+            parsed = message_from_bytes(header, policy=default_policy)
+            if value in str(parsed.get(field, "")):
+                found.append(uid)
+        return found
+
+    def fetch(self, uids: list[int], data: list[str]) -> dict[int, dict[bytes, Any]]:
+        return {
+            uid: {
+                b"RFC822.HEADER": self.messages[uid],
+                b"RFC822.SIZE": len(self.messages[uid]),
+                b"FLAGS": (),
+                b"INTERNALDATE": datetime(2026, 1, 1, 0, uid),
+            }
+            for uid in uids
+            if uid in self.messages
+        }
+
+    def logout(self) -> None:
+        pass
+
+
+def test_get_thread_reconstructs_conversation() -> None:
+    messages = {
+        1: b"Message-ID: <root@x>\nSubject: Root\nFrom: a@x\n\n",
+        2: (
+            b"Message-ID: <mid@x>\nIn-Reply-To: <root@x>\nReferences: <root@x>\n"
+            b"Subject: Re: Root\nFrom: b@x\n\n"
+        ),
+        3: (
+            b"Message-ID: <leaf@x>\nIn-Reply-To: <mid@x>\nReferences: <root@x> <mid@x>\n"
+            b"Subject: Re: Root\nFrom: a@x\n\n"
+        ),
+    }
+    client = BridgeClient(make_config())
+    client._connect = lambda: ThreadFake(messages)  # type: ignore[method-assign]
+    thread = client.get_thread("<mid@x>")
+    assert [message.message_id for message in thread] == ["<root@x>", "<mid@x>", "<leaf@x>"]
+    assert [message.uid for message in thread] == [1, 2, 3]
+
+
+def test_get_thread_missing_message_returns_empty() -> None:
+    client = BridgeClient(make_config())
+    client._connect = lambda: ThreadFake({})  # type: ignore[method-assign]
+    assert client.get_thread("<missing@x>") == []

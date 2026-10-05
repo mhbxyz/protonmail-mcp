@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "folder": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Folder"
+    }
+  },
+  "title": "get_statusArguments",
+  "type": "object"
+}

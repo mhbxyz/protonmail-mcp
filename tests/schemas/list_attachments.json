@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id"
+  ],
+  "title": "list_attachmentsArguments",
+  "type": "object"
+}

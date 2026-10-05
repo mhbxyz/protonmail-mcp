@@ -46,6 +46,12 @@ class Capabilities:
 
 
 @dataclass(frozen=True, slots=True)
+class FilesPolicy:
+    directory: str = "~/.local/share/protonmail-mcp/files"
+    max_bytes: int = 25 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
 class OrganizePolicy:
     max_bulk: int = 50
     protect_drafts: bool = True
@@ -61,6 +67,7 @@ class Policy:
     source: str
     idempotency_window_seconds: int = DEFAULT_IDEMPOTENCY_WINDOW_SECONDS
     organize: OrganizePolicy = OrganizePolicy()
+    files: FilesPolicy = FilesPolicy()
 
 
 def effective_mode(capabilities: Capabilities) -> str:
@@ -146,6 +153,14 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
                 f"policy.toml: organize.{name} must be a list of non-empty strings"
             )
 
+    files_table = _table(data, "files")
+    directory = files_table.get("directory", FilesPolicy().directory)
+    if not isinstance(directory, str) or not directory.strip():
+        raise PolicyError("policy.toml: files.directory must be a non-empty string")
+    max_bytes = files_table.get("max_bytes", FilesPolicy().max_bytes)
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise PolicyError("policy.toml: files.max_bytes must be a positive integer")
+
     return Policy(
         mode=mode,
         capabilities=Capabilities(**flags),
@@ -158,4 +173,5 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
             allowed_targets=tuple(targets),
             label_allowlist=tuple(labels),
         ),
+        files=FilesPolicy(directory=directory, max_bytes=max_bytes),
     )

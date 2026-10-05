@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from protonmail_mcp.parsing import (
+    attachment_parts,
     extract_attachments,
     extract_body,
+    extract_links,
     full_from_message,
+    header_message_id,
+    html_to_markdown,
     html_to_text,
+    strip_quoted,
     summary_from_header,
+    thread_parent_ids,
     truncate,
 )
 
@@ -147,3 +153,53 @@ def test_helpers() -> None:
     message = message_from_bytes(MULTIPART_EML)
     assert "Merci" in extract_body(message)
     assert len(extract_attachments(message)) == 1
+
+
+def test_attachment_parts_extracts_payloads() -> None:
+    parts = attachment_parts(MULTIPART_EML)
+    assert len(parts) == 1
+    assert parts[0].filename == "facture.pdf"
+    assert parts[0].content_type == "application/pdf"
+    assert parts[0].data
+
+
+def test_html_to_markdown_keeps_links_and_lists() -> None:
+    markdown = html_to_markdown(
+        '<p>Hello</p><ul><li>One</li><li>Two</li></ul>'
+        '<a href="https://x.test/a">link</a>'
+    )
+    assert "Hello" in markdown
+    assert "- One" in markdown
+    assert "[link](https://x.test/a)" in markdown
+
+
+def test_extract_links_dedupes() -> None:
+    links = extract_links(
+        text="see https://a.test and https://a.test",
+        html='<a href="https://b.test">x</a>',
+    )
+    assert links == ["https://b.test", "https://a.test"]
+
+
+def test_strip_quoted_and_signature() -> None:
+    text, removed = strip_quoted("Merci !\n\nOn Mon, Alice wrote:\n> old")
+    assert removed is True
+    assert text == "Merci !"
+    text2, removed2 = strip_quoted("Body\n-- \nSig")
+    assert removed2 is True
+    assert text2 == "Body"
+    text3, removed3 = strip_quoted("Just body")
+    assert removed3 is False
+
+
+def test_thread_helpers() -> None:
+    raw = b"References: <root@x> <mid@x>\nIn-Reply-To: <mid@x>\n\n"
+    assert thread_parent_ids(raw) == ["<root@x>", "<mid@x>"]
+    assert header_message_id(b"Message-ID: <m@x>\n\n") == "<m@x>"
+
+
+def test_full_from_message_exposes_rendering_metadata() -> None:
+    email = full_from_message(HTML_EML, uid=3, folder="INBOX", flags=[], size=1, max_chars=20000)
+    assert email.content_trust == "untrusted"
+    assert email.quoted_removed is False
+    assert "Bonjour," in email.body_text

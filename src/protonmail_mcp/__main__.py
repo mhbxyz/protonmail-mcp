@@ -46,7 +46,7 @@ def run_check() -> int:
     try:
         client = get_client()
         folders = client.list_folders()
-        recent = client.list_emails(limit=3)
+        recent = client.list_emails(limit=3).messages
     except (ConfigError, MailboxError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
