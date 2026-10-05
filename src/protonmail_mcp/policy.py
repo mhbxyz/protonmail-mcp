@@ -4,6 +4,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 DEFAULT_POLICY_PATH = "~/.config/protonmail-mcp/policy.toml"
 DEFAULT_CONFIRMATION_TTL_SECONDS = 300
@@ -58,7 +59,7 @@ def effective_mode(capabilities: Capabilities) -> str:
     return "custom"
 
 
-def _read_policy_file(path: Path) -> dict:
+def _read_policy_file(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as handle:
             return tomllib.load(handle)
@@ -68,7 +69,7 @@ def _read_policy_file(path: Path) -> dict:
         raise PolicyError(f"{path}: cannot read policy file: {exc}") from exc
 
 
-def _table(data: dict, name: str) -> dict:
+def _table(data: dict[str, Any], name: str) -> dict[str, Any]:
     value = data.get(name, {})
     if not isinstance(value, dict):
         raise PolicyError(f"policy.toml: [{name}] must be a table")
@@ -80,7 +81,7 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
     raw_path = environment.get("PROTONMAIL_MCP_POLICY", DEFAULT_POLICY_PATH)
     path = Path(os.path.expanduser(raw_path))
 
-    data: dict = {}
+    data: dict[str, Any] = {}
     exists = path.exists()
     if exists:
         data = _read_policy_file(path)

@@ -137,12 +137,14 @@ def _is_attachment(part: Message) -> bool:
 
 
 def _part_text(part: Message) -> str:
-    try:
-        content = part.get_content()
-        if isinstance(content, str):
-            return content
-    except (AttributeError, LookupError, UnicodeDecodeError, ValueError):
-        pass
+    getter = getattr(part, "get_content", None)
+    if getter is not None:
+        try:
+            content = getter()
+            if isinstance(content, str):
+                return content
+        except (LookupError, UnicodeDecodeError, ValueError):
+            pass
     payload = part.get_payload(decode=True)
     if not isinstance(payload, bytes):
         return ""

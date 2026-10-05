@@ -39,6 +39,35 @@ itself (report those to Proton), and physical device theft.
 - The server connects to `127.0.0.1` only and speaks stdio to the MCP client.
 - No telemetry, no requests to third parties.
 
+## Automated enforcement
+
+Every push and pull request must pass:
+
+| Check | Tool | Gate |
+|---|---|---|
+| Lint including security rules (bandit) | ruff (`S`) | blocking |
+| Static types, strict | mypy | blocking |
+| Adversarial, fuzz, capability-matrix tests | pytest + Hypothesis | blocking |
+| Coverage ≥ 88% on security-critical modules | pytest-cov | blocking |
+| Secret scanning (full history) | gitleaks | blocking |
+| Workflow hardening (SHA pinning, permissions) | zizmor | blocking |
+| Dependency vulnerabilities | pip-audit | blocking |
+| Static analysis (SAST) | semgrep `p/security-audit`, `p/python` | blocking |
+| Code scanning | CodeQL (python + actions) | blocking |
+| Dependency review on pull requests | dependency-review-action | blocking |
+| Repository posture | OpenSSF Scorecard | weekly |
+| Dependency freshness | Dependabot (7-day cooldown) | PR-based |
+
+Structural tests enforce conventions that are otherwise easy to erode:
+
+- Every `commit_*` tool must declare a required `token` parameter and a destructive
+  annotation; every `prepare_*` must have a matching `commit_*`.
+- `commit_*`/`prepare_*` tools exist only when the corresponding capability is enabled.
+- Read-mode tools may never call a mutating client method.
+- The whole test suite blocks non-loopback network access: telemetry cannot be added
+  silently.
+- Tool input schemas are snapshotted; any change must be deliberate.
+
 ## Security architecture for write/send/delete
 
 ### Capability modes

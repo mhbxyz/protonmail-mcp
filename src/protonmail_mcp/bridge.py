@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import re
 import ssl
 import threading
@@ -23,6 +24,7 @@ T = TypeVar("T")
 
 _RETRYABLE_ERRORS = (IMAPClientAbortError, ProtocolError, OSError)
 _APPENDUID = re.compile(rb"APPENDUID\s+\d+\s+(\d+)")
+MAX_MESSAGE_BYTES = 25 * 1024 * 1024
 
 
 class MailboxError(RuntimeError):
@@ -86,10 +88,9 @@ class BridgeClient:
                     f"No message with Message-ID {message_id!r} in folder {folder!r}"
                 )
             uid = max(uids)
-            response = client.fetch([uid], ["FLAGS", "RFC822.SIZE", "BODY.PEEK[]", "INTERNALDATE"])
-            item = response.get(uid)
-            if not item:
-                raise MessageNotFoundError(f"Message {message_id!r} vanished while fetching")
+            item = self._fetch_body_guarded(
+                client, uid, f"Message {message_id!r} vanished while fetching"
+            )
             raw = _as_bytes(item.get(b"BODY[]"))
             return full_from_message(
                 raw,
@@ -117,10 +118,9 @@ class BridgeClient:
 
         def operation(client: IMAPClient) -> EmailContent:
             client.select_folder(folder, readonly=True)
-            response = client.fetch([uid], ["FLAGS", "RFC822.SIZE", "BODY.PEEK[]", "INTERNALDATE"])
-            item = response.get(uid)
-            if not item:
-                raise MessageNotFoundError(f"Draft UID {uid} not found in {folder!r}")
+            item = self._fetch_body_guarded(
+                client, uid, f"Draft UID {uid} not found in {folder!r}"
+            )
             return full_from_message(
                 _as_bytes(item.get(b"BODY[]")),
                 uid=uid,
@@ -183,6 +183,23 @@ class BridgeClient:
                 raise MailboxError(f"deleting draft {uid} failed: {exc}") from exc
 
         self._run(operation)
+
+    @staticmethod
+    def _fetch_body_guarded(
+        client: IMAPClient, uid: int, missing_message: str
+    ) -> dict[Any, Any]:
+        meta = client.fetch([uid], ["FLAGS", "RFC822.SIZE", "INTERNALDATE"])
+        item = meta.get(uid)
+        if not item:
+            raise MessageNotFoundError(missing_message)
+        size = int(item.get(b"RFC822.SIZE") or 0)
+        if size > MAX_MESSAGE_BYTES:
+            raise MailboxError(
+                f"message is too large to fetch ({size} bytes; limit {MAX_MESSAGE_BYTES})"
+            )
+        response = client.fetch([uid], ["FLAGS", "RFC822.SIZE", "BODY.PEEK[]", "INTERNALDATE"])
+        body_item = response.get(uid)
+        return body_item if isinstance(body_item, dict) else item
 
     @staticmethod
     def _list_criteria(
@@ -262,10 +279,8 @@ class BridgeClient:
 
     def _disconnect(self) -> None:
         if self._client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._client.logout()
-            except Exception:
-                pass
             self._client = None
 
     def _connection(self) -> IMAPClient:

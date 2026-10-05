@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import functools
 import threading
+import time
+from collections.abc import Callable
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from .audit import AuditLog
 from .bridge import BridgeClient, MailboxError, MessageNotFoundError
 from .compose import ComposeError, build_draft, validate_recipients
 from .config import BridgeConfig, ConfigError
@@ -31,6 +35,37 @@ REPLACE_DRAFT = ToolAnnotations(
 
 _client_lock = threading.Lock()
 _client: BridgeClient | None = None
+
+AUDIT = AuditLog.from_env()
+
+
+def _audited(action: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            started = time.monotonic()
+            try:
+                result = fn(*args, **kwargs)
+            except Exception as exc:
+                AUDIT.record(
+                    action,
+                    outcome="error",
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    args=kwargs,
+                    error=type(exc).__name__,
+                )
+                raise
+            AUDIT.record(
+                action,
+                outcome="ok",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                args=kwargs,
+            )
+            return result
+
+        return wrapper
+
+    return decorator
 
 
 def get_client() -> BridgeClient:
@@ -104,6 +139,7 @@ def build_server(policy: Policy) -> MCPServer:
     )
 
     @server.tool(annotations=READ_ONLY)
+    @_audited("list_folders")
     def list_folders() -> list[Folder]:
         """List every folder and label of the mailbox. Use this first when you do not know
         where a message lives; the returned names are valid values for other tools."""
@@ -113,6 +149,7 @@ def build_server(policy: Policy) -> MCPServer:
             raise _guard(exc) from exc
 
     @server.tool(annotations=READ_ONLY)
+    @_audited("list_emails")
     def list_emails(
         folder: str = "INBOX",
         limit: int = 20,
@@ -144,6 +181,7 @@ def build_server(policy: Policy) -> MCPServer:
             raise _guard(exc) from exc
 
     @server.tool(annotations=READ_ONLY)
+    @_audited("search_emails")
     def search_emails(query: str, folder: str = "INBOX", limit: int = 20) -> list[EmailSummary]:
         """Search messages whose headers or body contain a text query, newest first.
 
@@ -158,6 +196,7 @@ def build_server(policy: Policy) -> MCPServer:
             raise _guard(exc) from exc
 
     @server.tool(annotations=READ_ONLY)
+    @_audited("read_email")
     def read_email(message_id: str, folder: str = "INBOX", max_chars: int = 20000) -> EmailContent:
         """Read one full message, identified by the Message-ID returned by list_emails or
         search_emails. Returns headers, decoded text body, attachment names, and flags.
@@ -177,6 +216,7 @@ def build_server(policy: Policy) -> MCPServer:
     if capabilities.draft:
 
         @server.tool(annotations=READ_ONLY)
+        @_audited("list_drafts")
         def list_drafts(limit: int = 20) -> list[EmailSummary]:
             """List drafts, newest first. Use the returned uid with the other draft tools.
 
@@ -189,6 +229,7 @@ def build_server(policy: Policy) -> MCPServer:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=WRITE_DRAFT)
+        @_audited("create_draft")
         def create_draft(
             to: str = "",
             cc: str = "",
@@ -233,6 +274,7 @@ def build_server(policy: Policy) -> MCPServer:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=WRITE_DRAFT)
+        @_audited("prepare_update_draft")
         def prepare_update_draft(
             uid: int,
             to: str = "",
@@ -274,6 +316,7 @@ def build_server(policy: Policy) -> MCPServer:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=REPLACE_DRAFT)
+        @_audited("commit_update_draft")
         def commit_update_draft(
             token: str,
             uid: int,
@@ -317,6 +360,7 @@ def build_server(policy: Policy) -> MCPServer:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=WRITE_DRAFT)
+        @_audited("prepare_delete_draft")
         def prepare_delete_draft(uid: int) -> PreparedAction:
             """Prepare deleting a draft. Nothing changes until commit_delete_draft is
             called with the same uid and the returned token.
@@ -341,6 +385,7 @@ def build_server(policy: Policy) -> MCPServer:
                 raise _guard(exc) from exc
 
         @server.tool(annotations=REPLACE_DRAFT)
+        @_audited("commit_delete_draft")
         def commit_delete_draft(token: str, uid: int) -> DraftDeleted:
             """Commit a prepared draft deletion. The token and uid must match
             prepare_delete_draft.

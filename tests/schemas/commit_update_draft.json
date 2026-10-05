@@ -1,0 +1,43 @@
+{
+  "properties": {
+    "bcc": {
+      "default": "",
+      "title": "Bcc",
+      "type": "string"
+    },
+    "body": {
+      "default": "",
+      "title": "Body",
+      "type": "string"
+    },
+    "cc": {
+      "default": "",
+      "title": "Cc",
+      "type": "string"
+    },
+    "subject": {
+      "default": "",
+      "title": "Subject",
+      "type": "string"
+    },
+    "to": {
+      "default": "",
+      "title": "To",
+      "type": "string"
+    },
+    "token": {
+      "title": "Token",
+      "type": "string"
+    },
+    "uid": {
+      "title": "Uid",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "token",
+    "uid"
+  ],
+  "title": "commit_update_draftArguments",
+  "type": "object"
+}

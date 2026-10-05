@@ -1,0 +1,57 @@
+{
+  "properties": {
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "sender": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sender"
+    },
+    "since_days": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Since Days"
+    },
+    "subject": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Subject"
+    },
+    "unread_only": {
+      "default": false,
+      "title": "Unread Only",
+      "type": "boolean"
+    }
+  },
+  "title": "list_emailsArguments",
+  "type": "object"
+}

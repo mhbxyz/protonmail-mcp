@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "title": "list_draftsArguments",
+  "type": "object"
+}

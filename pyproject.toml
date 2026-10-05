@@ -34,8 +34,11 @@ Issues = "https://github.com/mhbxyz/protonmail-mcp/issues"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6",
+    "mypy>=1.17",
     "pytest>=8.4",
-    "ruff>=0.12",
+    "pytest-cov>=6",
+    "ruff>=0.16",
 ]
 
 [build-system]
@@ -48,9 +51,27 @@ packages = ["src/protonmail_mcp"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-lint.select = ["E", "F", "I", "UP", "B"]
+lint.select = ["E", "F", "I", "UP", "B", "S", "T20", "BLE"]
 lint.ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106"]
+"src/protonmail_mcp/__main__.py" = ["T20"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_configs = true
+namespace_packages = true
+mypy_path = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["imapclient.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.coverage.run]
+source = ["protonmail_mcp"]

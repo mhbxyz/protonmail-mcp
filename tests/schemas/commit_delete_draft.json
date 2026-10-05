@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "token": {
+      "title": "Token",
+      "type": "string"
+    },
+    "uid": {
+      "title": "Uid",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "token",
+    "uid"
+  ],
+  "title": "commit_delete_draftArguments",
+  "type": "object"
+}

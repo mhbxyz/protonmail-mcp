@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_IMAP_PORT = 1143
@@ -36,7 +36,7 @@ class BridgeConfig:
     imap_port: int
     smtp_port: int
     username: str
-    password: str
+    password: str = field(repr=False)
     timeout: float
     verify_tls: bool
     imap_security: str = "starttls"

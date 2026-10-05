@@ -1,0 +1,41 @@
+{
+  "properties": {
+    "bcc": {
+      "default": "",
+      "title": "Bcc",
+      "type": "string"
+    },
+    "body": {
+      "default": "",
+      "title": "Body",
+      "type": "string"
+    },
+    "cc": {
+      "default": "",
+      "title": "Cc",
+      "type": "string"
+    },
+    "in_reply_to": {
+      "default": "",
+      "title": "In Reply To",
+      "type": "string"
+    },
+    "references": {
+      "default": "",
+      "title": "References",
+      "type": "string"
+    },
+    "subject": {
+      "default": "",
+      "title": "Subject",
+      "type": "string"
+    },
+    "to": {
+      "default": "",
+      "title": "To",
+      "type": "string"
+    }
+  },
+  "title": "create_draftArguments",
+  "type": "object"
+}

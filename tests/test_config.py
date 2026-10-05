@@ -53,3 +53,17 @@ def test_from_env_invalid_port(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PROTONMAIL_BRIDGE_IMAP_PORT", "abc")
     with pytest.raises(ConfigError):
         BridgeConfig.from_env()
+
+
+def test_repr_does_not_leak_password() -> None:
+    config = BridgeConfig(
+        host="127.0.0.1",
+        imap_port=1143,
+        smtp_port=1025,
+        username="me@proton.me",
+        password="SUPER_SECRET",
+        timeout=30.0,
+        verify_tls=False,
+    )
+    assert "SUPER_SECRET" not in repr(config)
+    assert "SUPER_SECRET" not in str(config)

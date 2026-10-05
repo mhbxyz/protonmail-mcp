@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "uid": {
+      "title": "Uid",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "uid"
+  ],
+  "title": "prepare_delete_draftArguments",
+  "type": "object"
+}

@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "max_chars": {
+      "default": 20000,
+      "title": "Max Chars",
+      "type": "integer"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id"
+  ],
+  "title": "read_emailArguments",
+  "type": "object"
+}

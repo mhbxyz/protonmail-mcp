@@ -1,6 +1,8 @@
 # protonmail-mcp
 
 [![CI](https://github.com/mhbxyz/protonmail-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/mhbxyz/protonmail-mcp/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/mhbxyz/protonmail-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/mhbxyz/protonmail-mcp/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/mhbxyz/protonmail-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/mhbxyz/protonmail-mcp)
 
 A lightweight [MCP](https://modelcontextprotocol.io) server that gives AI agents
 read access to a Proton Mail mailbox through a local
@@ -164,6 +166,10 @@ non-zero with a clear error if the configuration or the Bridge session is wrong.
 Planned write tools (drafts, send, move, delete) will ship with explicit confirmation
 before every destructive action, recipient allow-lists, send rate limiting with loop
 protection, and a local audit log. Autonomous send/delete will never be the default.
+
+Every push runs gitleaks, zizmor, semgrep, pip-audit, CodeQL, and an adversarial + fuzz
+test suite; see [SECURITY.md](SECURITY.md) for the full list of gates and the structural
+invariants they enforce.
 
 ## Alternatives
 

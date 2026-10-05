@@ -6,7 +6,12 @@ from typing import Any
 import pytest
 from imapclient.exceptions import IMAPClientAbortError, IMAPClientError
 
-from protonmail_mcp.bridge import BridgeClient, MailboxError, MessageNotFoundError
+from protonmail_mcp.bridge import (
+    MAX_MESSAGE_BYTES,
+    BridgeClient,
+    MailboxError,
+    MessageNotFoundError,
+)
 from protonmail_mcp.config import BridgeConfig
 
 HEADER = b"""From: Alice <alice@example.com>
@@ -290,3 +295,27 @@ def test_list_drafts_uses_drafts_folder() -> None:
     drafts = client.list_drafts()
     assert [draft.uid for draft in drafts] == [1]
     assert fake.selected == ("Brouillons", True)
+
+
+def test_get_message_rejects_oversized_message() -> None:
+    fake = FakeIMAPClient(
+        search_results=[9],
+        fetch_results={
+            9: {b"FLAGS": (), b"RFC822.SIZE": MAX_MESSAGE_BYTES + 1, b"BODY[]": b""}
+        },
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    with pytest.raises(MailboxError, match="too large"):
+        client.get_message("<hello@example.com>")
+
+
+def test_get_draft_rejects_oversized_draft() -> None:
+    fake = FakeIMAPClient(
+        folders=DRAFTS_FOLDERS,
+        fetch_results={
+            5: {b"FLAGS": (), b"RFC822.SIZE": MAX_MESSAGE_BYTES + 1, b"BODY[]": b""}
+        },
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    with pytest.raises(MailboxError, match="too large"):
+        client.get_draft(5)
