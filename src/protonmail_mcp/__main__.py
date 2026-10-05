@@ -21,6 +21,7 @@ def _configure_logging() -> None:
     handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def main(argv: Sequence[str] | None = None) -> None:

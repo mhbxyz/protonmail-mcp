@@ -91,7 +91,11 @@ class InboxWatcher:
                     while not self._stop.is_set():
                         events = connection.idle_check(timeout=self._idle_timeout)
                         for event in events:
-                            if isinstance(event, tuple) and event and event[0] == b"EXISTS":
+                            if (
+                                isinstance(event, tuple)
+                                and len(event) >= 2
+                                and event[1] == b"EXISTS"
+                            ):
                                 self._notify()
                 finally:
                     with contextlib.suppress(*_IGNORED_ERRORS):

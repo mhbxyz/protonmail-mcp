@@ -59,7 +59,7 @@ class FakeClock:
 
 
 def test_detects_new_mail_and_stops() -> None:
-    connection = FakeConnection([[(b"EXISTS", 1)]])
+    connection = FakeConnection([[(7050, b"EXISTS")]])
     events: list[int] = []
     watcher = InboxWatcher(lambda: connection, lambda: events.append(1), idle_timeout=0.01)
     watcher.start()
@@ -75,7 +75,7 @@ def test_detects_new_mail_and_stops() -> None:
 
 
 def test_coalesces_events_within_min_interval() -> None:
-    connection = FakeConnection([[(b"EXISTS", 1)], [(b"EXISTS", 2)]])
+    connection = FakeConnection([[(7050, b"EXISTS")], [(7051, b"EXISTS")]])
     events: list[int] = []
     watcher = InboxWatcher(
         lambda: connection,
@@ -93,7 +93,7 @@ def test_coalesces_events_within_min_interval() -> None:
 
 
 def test_notifies_again_after_interval() -> None:
-    connection = FakeConnection([[(b"EXISTS", 1)], [(b"EXISTS", 2)]])
+    connection = FakeConnection([[(7050, b"EXISTS")], [(7051, b"EXISTS")]])
     events: list[int] = []
     clock = FakeClock()
     watcher = InboxWatcher(
@@ -114,7 +114,7 @@ def test_notifies_again_after_interval() -> None:
 
 def test_reconnects_with_backoff_after_failure() -> None:
     failing = FakeConnection(fail_after=1)
-    good = FakeConnection([[(b"EXISTS", 1)]])
+    good = FakeConnection([[(7050, b"EXISTS")]])
     connections = [failing, good]
     events: list[int] = []
     sleeps: list[float] = []
@@ -136,7 +136,7 @@ def test_reconnects_with_backoff_after_failure() -> None:
 
 
 def test_callback_errors_do_not_kill_the_watcher() -> None:
-    connection = FakeConnection([[(b"EXISTS", 1)]])
+    connection = FakeConnection([[(7050, b"EXISTS")]])
 
     def failing_callback() -> None:
         raise RuntimeError("boom")
