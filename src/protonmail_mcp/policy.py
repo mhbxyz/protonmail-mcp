@@ -8,6 +8,7 @@ from typing import Any
 
 DEFAULT_POLICY_PATH = "~/.config/protonmail-mcp/policy.toml"
 DEFAULT_CONFIRMATION_TTL_SECONDS = 300
+DEFAULT_IDEMPOTENCY_WINDOW_SECONDS = 300
 MODES = ("read", "draft", "organize", "send", "delete")
 CAPABILITY_NAMES = ("draft", "organize", "send", "delete")
 
@@ -50,6 +51,7 @@ class Policy:
     capabilities: Capabilities
     confirmation_ttl_seconds: int
     source: str
+    idempotency_window_seconds: int = DEFAULT_IDEMPOTENCY_WINDOW_SECONDS
 
 
 def effective_mode(capabilities: Capabilities) -> str:
@@ -111,9 +113,17 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
     if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0:
         raise PolicyError("policy.toml: confirmations.ttl_seconds must be a positive integer")
 
+    idempotency = _table(data, "idempotency")
+    window = idempotency.get("window_seconds", DEFAULT_IDEMPOTENCY_WINDOW_SECONDS)
+    if isinstance(window, bool) or not isinstance(window, int) or window < 0:
+        raise PolicyError(
+            "policy.toml: idempotency.window_seconds must be a non-negative integer"
+        )
+
     return Policy(
         mode=mode,
         capabilities=Capabilities(**flags),
         confirmation_ttl_seconds=ttl,
         source=str(path) if exists else "defaults",
+        idempotency_window_seconds=window,
     )

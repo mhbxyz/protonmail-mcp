@@ -10,6 +10,7 @@ from protonmail_mcp.compose import (
     build_draft,
     build_forward,
     build_reply,
+    draft_view,
     forward_subject,
     reply_subject,
     validate_recipients,
@@ -150,3 +151,19 @@ def test_build_forward() -> None:
     assert "Subject: Hello" in body
     assert "Attachments: doc.pdf" in body
     assert "Ligne 1" in body
+
+
+def test_draft_view_flags_external_recipients() -> None:
+    composed = build_draft(
+        "me@proton.me",
+        to="Alice <alice@example.com>",
+        cc="bob@proton.me",
+        subject="Hi",
+        body="Body",
+    )
+    view = draft_view(composed, "me@proton.me")
+    assert view.recipients == ["alice@example.com", "bob@proton.me"]
+    assert view.external_recipients == ["alice@example.com"]
+    assert view.body_text.strip() == "Body"
+    assert "Subject: Hi" in view.raw_text
+    assert view.headers["Subject"] == "Hi"

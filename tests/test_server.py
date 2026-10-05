@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from email import message_from_bytes
+from email.policy import default as default_policy
 from types import SimpleNamespace
 from typing import Any
 
 from mcp import Client
 
-from protonmail_mcp.bridge import MailboxError
+from protonmail_mcp.bridge import MailboxError, MessageNotFoundError
 from protonmail_mcp.models import EmailContent, EmailSummary, Folder
 from protonmail_mcp.policy import Capabilities, Policy
 from protonmail_mcp.server import build_server, server, set_client
@@ -19,6 +21,8 @@ class FakeMailbox:
         self.created: list[bytes] = []
         self.replaced: list[int] = []
         self.deleted: list[int] = []
+        self.next_uid = 42
+        self.draft_uids: set[int] = {5}
 
     def list_folders(self) -> list[Folder]:
         return [Folder(name="INBOX"), Folder(name="Projets")]
@@ -58,6 +62,8 @@ class FakeMailbox:
         return [EmailSummary(message_id="<draft-5@test>", folder="Drafts", uid=5, subject="Draft 5")]
 
     def get_draft(self, uid: int, max_chars: int = 20000) -> EmailContent:
+        if uid not in self.draft_uids:
+            raise MessageNotFoundError(f"Draft UID {uid} not found")
         return EmailContent(
             message_id=f"<draft-{uid}@test>",
             folder="Drafts",
@@ -67,14 +73,26 @@ class FakeMailbox:
         )
 
     def append_to_drafts(self, raw: bytes) -> int:
+        uid = self.next_uid
+        self.next_uid += 1
+        self.draft_uids.add(uid)
         self.created.append(raw)
-        return 42
+        return uid
 
     def replace_draft(self, uid: int, raw: bytes) -> int:
+        if uid not in self.draft_uids:
+            raise MessageNotFoundError(f"Draft UID {uid} not found")
+        self.draft_uids.discard(uid)
         self.replaced.append(uid)
-        return 43
+        new_uid = self.next_uid
+        self.next_uid += 1
+        self.draft_uids.add(new_uid)
+        return new_uid
 
     def delete_draft(self, uid: int) -> None:
+        if uid not in self.draft_uids:
+            raise MessageNotFoundError(f"Draft UID {uid} not found")
+        self.draft_uids.discard(uid)
         self.deleted.append(uid)
 
 
@@ -293,7 +311,7 @@ def test_update_draft_requires_matching_token() -> None:
         cleanup()
     assert committed.is_error in (False, None)
     assert mailbox.replaced == [5]
-    assert tool_payload(committed)["uid"] == 43
+    assert tool_payload(committed)["uid"] == 42
 
 
 def test_reply_draft_flow() -> None:
@@ -363,3 +381,69 @@ def test_forward_draft_flow() -> None:
     assert committed.is_error in (False, None)
     assert len(mailbox.created) == 1
     assert b"Fwd: Hello" in mailbox.created[0]
+
+
+def test_create_draft_is_idempotent() -> None:
+    built = draft_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    args = {"to": "alice@example.com", "subject": "Hello", "body": "Bonjour"}
+    try:
+        first = tool_payload(call_built(built, "create_draft", dict(args)))
+        second = tool_payload(call_built(built, "create_draft", dict(args)))
+    finally:
+        cleanup()
+    assert first["duplicate"] is False
+    assert second["duplicate"] is True
+    assert second["uid"] == first["uid"]
+    assert len(mailbox.created) == 1
+
+
+def test_create_draft_recreates_after_manual_delete() -> None:
+    built = draft_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    args = {"to": "alice@example.com", "subject": "X", "body": "Y"}
+    try:
+        first = tool_payload(call_built(built, "create_draft", dict(args)))
+        mailbox.draft_uids.discard(first["uid"])
+        second = tool_payload(call_built(built, "create_draft", dict(args)))
+    finally:
+        cleanup()
+    assert second["duplicate"] is False
+    assert second["uid"] != first["uid"]
+    assert len(mailbox.created) == 2
+
+
+def test_preview_draft_matches_created_draft() -> None:
+    built = draft_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    args = {
+        "to": "Alice <alice@example.com>",
+        "cc": "me@proton.me",
+        "subject": "Hello",
+        "body": "Bonjour",
+    }
+    try:
+        preview = tool_payload(call_built(built, "preview_draft", dict(args)))
+        call_built(built, "create_draft", dict(args))
+    finally:
+        cleanup()
+    assert preview["recipients"] == ["alice@example.com", "me@proton.me"]
+    assert preview["external_recipients"] == ["alice@example.com"]
+    preview_message = message_from_bytes(preview["raw"].encode(), policy=default_policy)
+    created_message = message_from_bytes(mailbox.created[0], policy=default_policy)
+    ignored = {"date", "message-id"}
+    preview_headers = {
+        str(key): str(value)
+        for key, value in preview_message.items()
+        if key.lower() not in ignored
+    }
+    created_headers = {
+        str(key): str(value)
+        for key, value in created_message.items()
+        if key.lower() not in ignored
+    }
+    assert preview_headers == created_headers
+    assert preview_message.get_content() == created_message.get_content()

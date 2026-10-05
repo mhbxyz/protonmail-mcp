@@ -33,10 +33,13 @@ are on the [roadmap](ROADMAP.md), each gated behind the controls described in
 | `read_email` | Read one message by `Message-ID`: decoded text body, attachments, flags, truncation via `max_chars` |
 
 When the `draft` capability is enabled (see [Capability policy](#capability-policy)),
-additional tools are registered: `list_drafts`, `create_draft`, and `prepare_*`/`commit_*`
-pairs for replying, forwarding, updating, and deleting drafts. Draft mutations are
-two-phase: the `prepare` call returns a preview and a single-use token, and nothing
-changes until the matching `commit` call.
+additional tools are registered: `list_drafts`, `create_draft`, `preview_draft` (renders
+the exact MIME without saving it), and `prepare_*`/`commit_*` pairs for replying,
+forwarding, updating, and deleting drafts. Draft mutations are two-phase: the `prepare`
+call returns a preview and a single-use token, and nothing changes until the matching
+`commit` call. Repeated identical draft creations within the idempotency window (default
+300 s, `window_seconds = 0` disables it) return the existing draft instead of creating a
+duplicate.
 
 Results are structured (Pydantic models). Every message carries its `Message-ID`; use
 that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronisations.
@@ -91,6 +94,9 @@ mode = "read"
 
 [confirmations]
 ttl_seconds = 300
+
+[idempotency]
+window_seconds = 300
 ```
 
 See [SECURITY.md](SECURITY.md) for the confirmation flow and [ROADMAP.md](ROADMAP.md) for

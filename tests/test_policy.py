@@ -103,6 +103,18 @@ def test_invalid_confirmation_ttl(tmp_path: Path) -> None:
         load_policy(env=env_for(tmp_path))
 
 
+def test_idempotency_window_default_and_custom(tmp_path: Path) -> None:
+    assert load_policy(env=env_for(tmp_path)).idempotency_window_seconds == 300
+    write_policy(tmp_path, "[idempotency]\nwindow_seconds = 0\n")
+    assert load_policy(env=env_for(tmp_path)).idempotency_window_seconds == 0
+
+
+def test_invalid_idempotency_window(tmp_path: Path) -> None:
+    write_policy(tmp_path, "[idempotency]\nwindow_seconds = -1\n")
+    with pytest.raises(PolicyError, match="window_seconds"):
+        load_policy(env=env_for(tmp_path))
+
+
 def test_effective_mode_for_presets_and_custom() -> None:
     assert effective_mode(Capabilities()) == "read"
     assert effective_mode(Capabilities(draft=True)) == "draft"

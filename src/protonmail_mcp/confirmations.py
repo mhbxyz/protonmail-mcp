@@ -99,6 +99,10 @@ class ConfirmationManager:
         with self._lock:
             return self._pending.pop(token, None) is not None
 
+    def reset(self) -> None:
+        with self._lock:
+            self._pending.clear()
+
     def pending_count(self) -> int:
         with self._lock:
             self._purge()

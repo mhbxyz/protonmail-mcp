@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email import message_from_bytes
 from email.message import EmailMessage
+from email.policy import default as default_policy
 from email.utils import format_datetime, formataddr, getaddresses, make_msgid
 
 from .models import EmailContent
@@ -212,4 +214,40 @@ def build_forward(
         to=to,
         subject=forward_subject(original.subject),
         body=text,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DraftView:
+    headers: dict[str, str]
+    recipients: list[str]
+    external_recipients: list[str]
+    body_text: str
+    raw_text: str
+
+
+def draft_view(composed: ComposedDraft, sender: str) -> DraftView:
+    message = message_from_bytes(composed.raw, policy=default_policy)
+    headers = {str(name): str(value) for name, value in message.items()}
+    recipients: list[str] = []
+    for field in ("To", "Cc", "Bcc"):
+        value = message.get(field)
+        if value:
+            recipients.extend(address for _, address in _address_pairs(str(value)))
+    sender_domain = sender.rpartition("@")[2].lower()
+    external = [
+        address
+        for address in recipients
+        if address.rpartition("@")[2].lower() != sender_domain
+    ]
+    try:
+        content = message.get_content()
+    except (LookupError, UnicodeDecodeError, ValueError):
+        content = ""
+    return DraftView(
+        headers=headers,
+        recipients=recipients,
+        external_recipients=external,
+        body_text=content if isinstance(content, str) else "",
+        raw_text=composed.raw.decode("utf-8", errors="replace"),
     )

@@ -7,6 +7,14 @@ import pytest
 
 os.environ.setdefault("PROTONMAIL_MCP_AUDIT_LOG", "")
 
+from protonmail_mcp import server as server_module  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def reset_server_state() -> None:
+    server_module.CONFIRMATIONS.reset()
+    server_module.IDEMPOTENCY.clear()
+
 
 @pytest.fixture(autouse=True)
 def block_external_network(monkeypatch: pytest.MonkeyPatch) -> None:

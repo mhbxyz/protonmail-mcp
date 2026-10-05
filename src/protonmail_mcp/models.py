@@ -46,6 +46,15 @@ class DraftCreated(BaseModel):
     message_id: str
     folder: str
     subject: str = ""
+    duplicate: bool = False
+
+
+class DraftPreview(BaseModel):
+    headers: dict[str, str]
+    recipients: list[str] = Field(default_factory=list)
+    external_recipients: list[str] = Field(default_factory=list)
+    body_text: str = ""
+    raw: str = ""
 
 
 class DraftDeleted(BaseModel):

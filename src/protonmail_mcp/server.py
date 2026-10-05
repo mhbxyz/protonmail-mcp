@@ -17,16 +17,24 @@ from .compose import (
     build_draft,
     build_forward,
     build_reply,
+    draft_view,
     forward_subject,
     reply_recipients,
     reply_subject,
     validate_recipients,
 )
 from .config import BridgeConfig, ConfigError
-from .confirmations import ConfirmationError, ConfirmationManager, PreparedConfirmation
+from .confirmations import (
+    ConfirmationError,
+    ConfirmationManager,
+    PreparedConfirmation,
+    payload_digest,
+)
+from .idempotency import DraftReference, IdempotencyStore
 from .models import (
     DraftCreated,
     DraftDeleted,
+    DraftPreview,
     EmailContent,
     EmailSummary,
     Folder,
@@ -144,14 +152,49 @@ def _prepared_action(prepared: PreparedConfirmation) -> PreparedAction:
     )
 
 
+def _idempotency_key(action: str, payload: dict[str, Any]) -> str:
+    return f"{action}:{payload_digest(payload)}"
+
+
+def _remembered_draft(key: str, client: BridgeClient) -> DraftCreated | None:
+    reference = IDEMPOTENCY.lookup(key)
+    if reference is None:
+        return None
+    try:
+        client.get_draft(reference.uid, max_chars=1)
+    except MessageNotFoundError:
+        IDEMPOTENCY.forget(key)
+        return None
+    return DraftCreated(
+        uid=reference.uid,
+        message_id=reference.message_id,
+        folder=reference.folder,
+        subject=reference.subject,
+        duplicate=True,
+    )
+
+
+def _remember_draft(key: str, created: DraftCreated) -> None:
+    IDEMPOTENCY.remember(
+        key,
+        DraftReference(
+            uid=created.uid,
+            message_id=created.message_id,
+            folder=created.folder,
+            subject=created.subject,
+        ),
+    )
+
+
 def build_server(policy: Policy) -> MCPServer:
     capabilities = policy.capabilities
     draft_hint = ""
     if capabilities.draft:
         draft_hint = (
-            " Draft tools are enabled: list_drafts, create_draft, and prepare/commit pairs "
-            "for updating and deleting drafts. Mutations only happen when committing a "
-            "prepared action with the token returned by its prepare step."
+            " Draft tools are enabled: list_drafts, create_draft, preview_draft, and "
+            "prepare/commit pairs for replying, forwarding, updating, and deleting "
+            "drafts. Mutations only happen when committing a prepared action with the "
+            "token returned by its prepare step."
         )
     server = MCPServer(
         name="protonmail",
@@ -282,6 +325,20 @@ def build_server(policy: Policy) -> MCPServer:
             """
             try:
                 client = get_client()
+                payload = {
+                    "action": "create_draft",
+                    "to": to,
+                    "cc": cc,
+                    "bcc": bcc,
+                    "subject": subject,
+                    "body": body,
+                    "in_reply_to": in_reply_to,
+                    "references": references,
+                }
+                key = _idempotency_key("create_draft", payload)
+                remembered = _remembered_draft(key, client)
+                if remembered is not None:
+                    return remembered
                 composed = build_draft(
                     client.config.username,
                     to=validate_recipients(to, header="To"),
@@ -293,12 +350,14 @@ def build_server(policy: Policy) -> MCPServer:
                     references=references,
                 )
                 uid = client.append_to_drafts(composed.raw)
-                return DraftCreated(
+                created = DraftCreated(
                     uid=uid,
                     message_id=composed.message_id,
                     folder=client.find_drafts_folder(),
                     subject=subject,
                 )
+                _remember_draft(key, created)
+                return created
             except (ConfigError, MailboxError, ComposeError) as exc:
                 raise _guard(exc) from exc
 
@@ -497,19 +556,26 @@ def build_server(policy: Policy) -> MCPServer:
                 reply_all: Also add the original To/Cc recipients (self excluded).
             """
             try:
-                CONFIRMATIONS.commit(token, _reply_payload(message_id, folder, body, reply_all))
+                payload = _reply_payload(message_id, folder, body, reply_all)
+                CONFIRMATIONS.commit(token, payload)
                 client = get_client()
+                key = _idempotency_key("reply_draft", payload)
+                remembered = _remembered_draft(key, client)
+                if remembered is not None:
+                    return remembered
                 original = client.get_message(message_id, folder=folder, max_chars=20000)
                 composed = build_reply(
                     original, client.config.username, body=body, reply_all=reply_all
                 )
                 uid = client.append_to_drafts(composed.raw)
-                return DraftCreated(
+                created = DraftCreated(
                     uid=uid,
                     message_id=composed.message_id,
                     folder=client.find_drafts_folder(),
                     subject=reply_subject(original.subject),
                 )
+                _remember_draft(key, created)
+                return created
             except (ConfigError, MailboxError, ComposeError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
@@ -576,8 +642,13 @@ def build_server(policy: Policy) -> MCPServer:
                 body: Optional text placed above the forwarded block.
             """
             try:
-                CONFIRMATIONS.commit(token, _forward_payload(message_id, folder, to, body))
+                payload = _forward_payload(message_id, folder, to, body)
+                CONFIRMATIONS.commit(token, payload)
                 client = get_client()
+                key = _idempotency_key("forward_draft", payload)
+                remembered = _remembered_draft(key, client)
+                if remembered is not None:
+                    return remembered
                 original = client.get_message(message_id, folder=folder, max_chars=20000)
                 composed = build_forward(
                     original,
@@ -586,13 +657,62 @@ def build_server(policy: Policy) -> MCPServer:
                     body=body,
                 )
                 uid = client.append_to_drafts(composed.raw)
-                return DraftCreated(
+                created = DraftCreated(
                     uid=uid,
                     message_id=composed.message_id,
                     folder=client.find_drafts_folder(),
                     subject=forward_subject(original.subject),
                 )
+                _remember_draft(key, created)
+                return created
             except (ConfigError, MailboxError, ComposeError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=READ_ONLY)
+        @_audited("preview_draft")
+        def preview_draft(
+            to: str = "",
+            cc: str = "",
+            bcc: str = "",
+            subject: str = "",
+            body: str = "",
+            in_reply_to: str = "",
+            references: str = "",
+        ) -> DraftPreview:
+            """Render the exact draft that create_draft would save, without saving
+            anything. Recipients outside the account's domain are flagged in
+            external_recipients.
+
+            Args:
+                to: Comma-separated recipients; may be empty.
+                cc: Comma-separated carbon-copy recipients.
+                bcc: Comma-separated blind carbon-copy recipients.
+                subject: Subject line.
+                body: Plain-text body.
+                in_reply_to: Optional Message-ID this draft replies to.
+                references: Optional space-separated Message-ID chain.
+            """
+            try:
+                client = get_client()
+                composed = build_draft(
+                    client.config.username,
+                    to=validate_recipients(to, header="To"),
+                    cc=validate_recipients(cc, header="Cc"),
+                    bcc=validate_recipients(bcc, header="Bcc"),
+                    subject=subject,
+                    body=body,
+                    in_reply_to=in_reply_to,
+                    references=references,
+                )
+                view = draft_view(composed, client.config.username)
+                return DraftPreview(
+                    headers=view.headers,
+                    recipients=view.recipients,
+                    external_recipients=view.external_recipients,
+                    body_text=view.body_text,
+                    raw=view.raw_text,
+                )
+            except (ConfigError, MailboxError, ComposeError) as exc:
                 raise _guard(exc) from exc
 
     return server
@@ -600,4 +720,5 @@ def build_server(policy: Policy) -> MCPServer:
 
 POLICY = load_policy()
 CONFIRMATIONS = ConfirmationManager(ttl_seconds=POLICY.confirmation_ttl_seconds)
+IDEMPOTENCY = IdempotencyStore(window_seconds=POLICY.idempotency_window_seconds)
 server = build_server(POLICY)

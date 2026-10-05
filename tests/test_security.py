@@ -18,6 +18,7 @@ READ_TOOLS = {"list_folders", "list_emails", "search_emails", "read_email"}
 DRAFT_TOOLS = {
     "list_drafts",
     "create_draft",
+    "preview_draft",
     "prepare_update_draft",
     "commit_update_draft",
     "prepare_delete_draft",
