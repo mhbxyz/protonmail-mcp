@@ -6,13 +6,13 @@ from collections.abc import Sequence
 
 from .bridge import MailboxError
 from .config import ConfigError
-from .server import get_client, server
+from .policy import PolicyError
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="protonmail-mcp",
-        description="Read-only MCP server for Proton Mail via Proton Bridge (stdio).",
+        description="MCP server for Proton Mail via Proton Bridge (stdio).",
     )
     parser.add_argument(
         "--check",
@@ -22,10 +22,26 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.check:
         raise SystemExit(run_check())
+    raise SystemExit(run_server())
+
+
+def run_server() -> int:
+    try:
+        from .server import server
+    except PolicyError as exc:
+        print(f"ERROR: invalid policy: {exc}", file=sys.stderr)
+        return 2
     server.run(transport="stdio")
+    return 0
 
 
 def run_check() -> int:
+    try:
+        from .server import POLICY, get_client
+    except PolicyError as exc:
+        print(f"ERROR: invalid policy: {exc}", file=sys.stderr)
+        return 2
+
     client = None
     try:
         client = get_client()
@@ -39,6 +55,10 @@ def run_check() -> int:
             client.close()
 
     print(f"Bridge connection OK: {client.config.username} -> {client.config.endpoint}")
+    print(
+        f"Policy: mode={POLICY.mode}, capabilities: {POLICY.capabilities.describe()} "
+        f"(source: {POLICY.source})"
+    )
     print(f"Folders ({len(folders)}):")
     for folder in folders:
         marker = "" if folder.selectable else " [not selectable]"

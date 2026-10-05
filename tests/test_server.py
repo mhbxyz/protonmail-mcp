@@ -8,7 +8,8 @@ from mcp import Client
 
 from protonmail_mcp.bridge import MailboxError
 from protonmail_mcp.models import EmailSummary, Folder
-from protonmail_mcp.server import server, set_client
+from protonmail_mcp.policy import Capabilities, Policy
+from protonmail_mcp.server import build_server, server, set_client
 
 
 class FakeMailbox:
@@ -67,6 +68,18 @@ def list_tools() -> list[Any]:
 
 def test_registered_tools() -> None:
     names = {tool.name for tool in list_tools()}
+    assert {"list_folders", "list_emails", "search_emails", "read_email"} <= names
+
+
+def test_build_server_registers_read_tools_and_reports_mode() -> None:
+    policy = Policy(
+        mode="read",
+        capabilities=Capabilities(),
+        confirmation_ttl_seconds=300,
+        source="test",
+    )
+    built = build_server(policy)
+    names = {tool.name for tool in asyncio.run(built.list_tools())}
     assert {"list_folders", "list_emails", "search_emails", "read_email"} <= names
 
 

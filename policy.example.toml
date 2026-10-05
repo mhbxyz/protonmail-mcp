@@ -1,0 +1,20 @@
+# protonmail-mcp capability policy
+#
+# Copy to ~/.config/protonmail-mcp/policy.toml (or point PROTONMAIL_MCP_POLICY at it).
+# Every capability is opt-in and enforced server-side; the default is read-only.
+#
+# Modes are cumulative presets:
+#   read -> draft -> organize -> send -> delete
+# Individual flags below override the preset (for example, allow send without delete).
+
+[policy]
+mode = "read"
+
+[capabilities]
+# draft = true      # create/update/delete drafts (Drafts folder only)
+# organize = true   # flags, moves, labels, trash
+# send = true       # SMTP submission (still requires allowlist and quotas)
+# delete = true     # permanent deletion (highest privilege, Trash-only)
+
+[confirmations]
+ttl_seconds = 300

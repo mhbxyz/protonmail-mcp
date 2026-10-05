@@ -61,6 +61,32 @@ pipx install protonmail-mcp
 | `PROTONMAIL_BRIDGE_IMAP_SECURITY` | `starttls` | `starttls` (Bridge 3.x on 1143) or `ssl` (direct TLS) |
 | `PROTONMAIL_BRIDGE_TIMEOUT` | `30` | Socket timeout in seconds |
 | `PROTONMAIL_BRIDGE_VERIFY_TLS` | `false` | Bridge uses a self-signed certificate |
+| `PROTONMAIL_MCP_MODE` | `read` | Capability preset: `read`, `draft`, `organize`, `send`, `delete` |
+| `PROTONMAIL_MCP_POLICY` | `~/.config/protonmail-mcp/policy.toml` | Optional policy file with capability overrides and limits |
+
+### Capability policy
+
+Write capabilities are opt-in and enforced server-side. `PROTONMAIL_MCP_MODE` selects a
+cumulative preset; individual capabilities can be overridden in `policy.toml` (see
+[policy.example.toml](policy.example.toml)). Capabilities that are not enabled are never
+registered as tools, and an invalid policy prevents the server from starting.
+
+```toml
+[policy]
+mode = "read"
+
+[capabilities]
+# draft = true
+# organize = true
+# send = true
+# delete = true
+
+[confirmations]
+ttl_seconds = 300
+```
+
+See [SECURITY.md](SECURITY.md) for the confirmation flow and [ROADMAP.md](ROADMAP.md) for
+what each mode will unlock.
 
 ### opencode
 
