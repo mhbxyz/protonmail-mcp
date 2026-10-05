@@ -7,7 +7,7 @@ from collections.abc import Sequence
 
 from .bridge import MailboxError
 from .config import ConfigError
-from .policy import PolicyError
+from .policy import PolicyError, effective_mode
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
@@ -121,7 +121,8 @@ def run_check() -> int:
     print(f"Bridge connection OK: {client.config.username} -> {client.config.endpoint}")
     print(f"Profile: {POLICY.profile_name}")
     print(
-        f"Policy: mode={POLICY.mode}, capabilities: {POLICY.capabilities.describe()} "
+        f"Policy: mode={effective_mode(POLICY.capabilities)} "
+        f"(configured: {POLICY.mode}), capabilities: {POLICY.capabilities.describe()} "
         f"(source: {POLICY.source})"
     )
     print(f"Folders ({len(folders)}):")
