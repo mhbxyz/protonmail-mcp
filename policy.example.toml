@@ -49,3 +49,21 @@ enabled = false
 path = "~/.local/state/protonmail-mcp/index.db"
 # excluded_folders = ["Spam"]
 max_body_chars = 10000
+
+# Multiple accounts: one Bridge instance per account, one MCP process per profile.
+# Select with --profile or PROTONMAIL_MCP_PROFILE; passwords come from the named
+# environment variables.
+#
+# [policy]
+# default_profile = "perso"
+#
+# [profiles.perso]
+# username = "perso@proton.me"
+# password_env = "PROTONMAIL_BRIDGE_PASSWORD_PERSO"
+#
+# [profiles.work]
+# username = "work@proton.me"
+# password_env = "PROTONMAIL_BRIDGE_PASSWORD_WORK"
+# imap_port = 2143
+# smtp_port = 2025
+# mode = "organize"

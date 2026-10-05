@@ -43,7 +43,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         default="",
         help="Bearer token for HTTP mode; prefer PROTONMAIL_MCP_HTTP_TOKEN.",
     )
+    parser.add_argument(
+        "--profile",
+        default="",
+        help="Account profile defined in policy.toml (sets PROTONMAIL_MCP_PROFILE).",
+    )
     args = parser.parse_args(argv)
+    if args.profile:
+        os.environ["PROTONMAIL_MCP_PROFILE"] = args.profile
     if args.check:
         raise SystemExit(run_check())
     if args.http:
@@ -112,6 +119,7 @@ def run_check() -> int:
             client.close()
 
     print(f"Bridge connection OK: {client.config.username} -> {client.config.endpoint}")
+    print(f"Profile: {POLICY.profile_name}")
     print(
         f"Policy: mode={POLICY.mode}, capabilities: {POLICY.capabilities.describe()} "
         f"(source: {POLICY.source})"

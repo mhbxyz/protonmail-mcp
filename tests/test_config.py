@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from protonmail_mcp.config import BridgeConfig, ConfigError
+from protonmail_mcp.config import BridgeConfig, ConfigError, resolve_bridge_config
+from protonmail_mcp.policy import Capabilities, Policy, ProfilePolicy
 
 
 def test_from_env_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -67,3 +68,49 @@ def test_repr_does_not_leak_password() -> None:
     )
     assert "SUPER_SECRET" not in repr(config)
     assert "SUPER_SECRET" not in str(config)
+
+
+def profile_policy() -> Policy:
+    return Policy(
+        mode="read",
+        capabilities=Capabilities(),
+        confirmation_ttl_seconds=300,
+        source="test",
+        profile_name="work",
+        profiles={
+            "work": ProfilePolicy(
+                name="work",
+                username="work@proton.me",
+                password_env="PW_WORK",
+                imap_port=2143,
+                smtp_port=2025,
+            )
+        },
+    )
+
+
+def test_resolve_bridge_config_from_profile() -> None:
+    config = resolve_bridge_config(profile_policy(), env={"PW_WORK": "secret"})
+    assert config.username == "work@proton.me"
+    assert config.imap_port == 2143
+    assert config.smtp_port == 2025
+    assert config.password == "secret"
+
+
+def test_resolve_bridge_config_missing_profile_password() -> None:
+    with pytest.raises(ConfigError, match="PW_WORK"):
+        resolve_bridge_config(profile_policy(), env={})
+
+
+def test_resolve_bridge_config_legacy_without_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PROTONMAIL_BRIDGE_USERNAME", "me@proton.me")
+    monkeypatch.setenv("PROTONMAIL_BRIDGE_PASSWORD", "secret")
+    policy = Policy(
+        mode="read",
+        capabilities=Capabilities(),
+        confirmation_ttl_seconds=300,
+        source="test",
+    )
+    config = resolve_bridge_config(policy)
+    assert config.username == "me@proton.me"
+    assert config.imap_port == 1143

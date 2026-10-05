@@ -253,6 +253,89 @@ def test_invalid_index_values(tmp_path: Path) -> None:
             load_policy(env=env_for(tmp_path))
 
 
+def test_profiles_require_selection(tmp_path: Path) -> None:
+    write_policy(tmp_path, '[profiles.a]\nusername = "a@x"\npassword_env = "PW_A"\n')
+    with pytest.raises(PolicyError, match="default_profile|PROTONMAIL_MCP_PROFILE"):
+        load_policy(env=env_for(tmp_path))
+
+
+def test_profiles_select_and_narrow(tmp_path: Path) -> None:
+    write_policy(
+        tmp_path,
+        "[policy]\n"
+        'default_profile = "a"\n'
+        'mode = "delete"\n'
+        "[profiles.a]\n"
+        'username = "a@x"\n'
+        'password_env = "PW_A"\n'
+        'mode = "read"\n',
+    )
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.profile_name == "a"
+    assert policy.capabilities == Capabilities()
+    assert policy.profiles["a"].username == "a@x"
+
+
+def test_profile_mode_used_when_global_not_explicit(tmp_path: Path) -> None:
+    write_policy(
+        tmp_path,
+        '[profiles.work]\nusername = "w@x"\npassword_env = "PW_W"\nmode = "draft"\n',
+    )
+    policy = load_policy(env=env_for(tmp_path, PROTONMAIL_MCP_PROFILE="work"))
+    assert policy.profile_name == "work"
+    assert policy.capabilities == Capabilities(draft=True)
+
+
+def test_profile_mode_intersects_explicit_global(tmp_path: Path) -> None:
+    write_policy(
+        tmp_path,
+        '[policy]\nmode = "read"\n[profiles.w]\nusername = "w@x"\npassword_env = "PW_W"\nmode = "send"\n',
+    )
+    policy = load_policy(env=env_for(tmp_path, PROTONMAIL_MCP_PROFILE="w"))
+    assert policy.capabilities == Capabilities()
+
+
+def test_capability_overrides_cap_profile_mode(tmp_path: Path) -> None:
+    write_policy(
+        tmp_path,
+        "[capabilities]\n"
+        "send = false\n"
+        '[profiles.w]\nusername = "w@x"\npassword_env = "PW_W"\nmode = "send"\n',
+    )
+    policy = load_policy(env=env_for(tmp_path, PROTONMAIL_MCP_PROFILE="w"))
+    assert policy.capabilities == Capabilities(draft=True, organize=True)
+
+
+def test_env_profile_overrides_default(tmp_path: Path) -> None:
+    write_policy(
+        tmp_path,
+        '[policy]\ndefault_profile = "a"\n'
+        '[profiles.a]\nusername = "a@x"\npassword_env = "PW_A"\n'
+        '[profiles.b]\nusername = "b@x"\npassword_env = "PW_B"\n',
+    )
+    policy = load_policy(env=env_for(tmp_path, PROTONMAIL_MCP_PROFILE="b"))
+    assert policy.profile_name == "b"
+
+
+def test_unknown_profile_rejected(tmp_path: Path) -> None:
+    write_policy(tmp_path, '[profiles.a]\nusername = "a@x"\npassword_env = "PW_A"\n')
+    with pytest.raises(PolicyError, match="unknown profile"):
+        load_policy(env=env_for(tmp_path, PROTONMAIL_MCP_PROFILE="nope"))
+
+
+def test_invalid_profiles(tmp_path: Path) -> None:
+    cases = [
+        ('[profiles.a]\nusername = ""\npassword_env = "PW"\n', "username"),
+        ('[profiles.a]\nusername = "a@x"\npassword_env = ""\n', "password_env"),
+        ('[profiles.a]\nusername = "a@x"\npassword_env = "PW"\nimap_port = 0\n', "imap_port"),
+        ('[profiles.a]\nusername = "a@x"\npassword_env = "PW"\nmode = "yolo"\n', "mode"),
+    ]
+    for text, match in cases:
+        write_policy(tmp_path, text)
+        with pytest.raises(PolicyError, match=match):
+            load_policy(env=env_for(tmp_path))
+
+
 def test_effective_mode_for_presets_and_custom() -> None:
     assert effective_mode(Capabilities()) == "read"
     assert effective_mode(Capabilities(draft=True)) == "draft"

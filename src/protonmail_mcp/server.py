@@ -25,7 +25,7 @@ from .compose import (
     reply_subject,
     validate_recipients,
 )
-from .config import BridgeConfig, ConfigError
+from .config import ConfigError, resolve_bridge_config
 from .confirmations import (
     ConfirmationError,
     ConfirmationManager,
@@ -137,7 +137,7 @@ def get_client() -> BridgeClient:
     global _client
     with _client_lock:
         if _client is None:
-            _client = BridgeClient(BridgeConfig.from_env())
+            _client = BridgeClient(resolve_bridge_config(POLICY))
         return _client
 
 

@@ -1208,6 +1208,26 @@ def test_index_tools_absent_when_disabled() -> None:
     assert "search_index" not in names
 
 
+def test_profile_mode_narrows_registered_tools(tmp_path: Path) -> None:
+    from protonmail_mcp.policy import load_policy
+
+    policy_path = tmp_path / "policy.toml"
+    policy_path.write_text(
+        '[profiles.w]\nusername = "w@x"\npassword_env = "PW_W"\nmode = "draft"\n'
+    )
+    policy = load_policy(
+        env={
+            "PROTONMAIL_MCP_POLICY": str(policy_path),
+            "PROTONMAIL_MCP_PROFILE": "w",
+        }
+    )
+    names = {tool.name for tool in asyncio.run(build_server(policy).list_tools())}
+    assert "create_draft" in names
+    assert "prepare_move" not in names
+    assert "prepare_send_draft" not in names
+    assert "prepare_delete_message" not in names
+
+
 def test_resources_are_registered() -> None:
     resources = asyncio.run(server.list_resources())
     names = {resource.name for resource in resources}

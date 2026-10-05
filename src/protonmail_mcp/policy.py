@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +74,17 @@ class IndexPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class ProfilePolicy:
+    name: str
+    username: str
+    password_env: str
+    host: str = "127.0.0.1"
+    imap_port: int = 1143
+    smtp_port: int = 1025
+    mode: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class OrganizePolicy:
     max_bulk: int = 50
     protect_drafts: bool = True
@@ -92,6 +103,8 @@ class Policy:
     files: FilesPolicy = FilesPolicy()
     send: SendPolicy = SendPolicy()
     index: IndexPolicy = IndexPolicy()
+    profile_name: str = "default"
+    profiles: dict[str, ProfilePolicy] = field(default_factory=dict)
 
 
 def effective_mode(capabilities: Capabilities) -> str:
@@ -118,6 +131,56 @@ def _table(data: dict[str, Any], name: str) -> dict[str, Any]:
     return value
 
 
+def _parse_profiles(data: dict[str, Any]) -> dict[str, ProfilePolicy]:
+    profiles: dict[str, ProfilePolicy] = {}
+    for name, raw in _table(data, "profiles").items():
+        if not isinstance(raw, dict):
+            raise PolicyError(f"policy.toml: profiles.{name} must be a table")
+        username = raw.get("username", "")
+        if not isinstance(username, str) or not username.strip():
+            raise PolicyError(
+                f"policy.toml: profiles.{name}.username must be a non-empty string"
+            )
+        password_env = raw.get("password_env", "")
+        if not isinstance(password_env, str) or not password_env.strip():
+            raise PolicyError(
+                f"policy.toml: profiles.{name}.password_env must be a non-empty string"
+            )
+        host = raw.get("host", "127.0.0.1")
+        if not isinstance(host, str) or not host.strip():
+            raise PolicyError(f"policy.toml: profiles.{name}.host must be a non-empty string")
+        ports: dict[str, int] = {}
+        for port_name, default_port in (("imap_port", 1143), ("smtp_port", 1025)):
+            value = raw.get(port_name, default_port)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 1 <= value <= 65535
+            ):
+                raise PolicyError(
+                    f"policy.toml: profiles.{name}.{port_name} must be an integer "
+                    "between 1 and 65535"
+                )
+            ports[port_name] = value
+        profile_mode = raw.get("mode")
+        if profile_mode is not None and (
+            not isinstance(profile_mode, str) or profile_mode not in _MODE_PRESETS
+        ):
+            raise PolicyError(
+                f"policy.toml: profiles.{name}.mode must be one of: {', '.join(MODES)}"
+            )
+        profiles[name] = ProfilePolicy(
+            name=name,
+            username=username.strip(),
+            password_env=password_env.strip(),
+            host=host.strip(),
+            imap_port=ports["imap_port"],
+            smtp_port=ports["smtp_port"],
+            mode=profile_mode,
+        )
+    return profiles
+
+
 def load_policy(env: dict[str, str] | None = None) -> Policy:
     environment = os.environ if env is None else env
     raw_path = environment.get("PROTONMAIL_MCP_POLICY", DEFAULT_POLICY_PATH)
@@ -133,9 +196,11 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
     if file_mode is not None and not isinstance(file_mode, str):
         raise PolicyError("policy.toml: policy.mode must be a string")
 
-    mode = environment.get("PROTONMAIL_MCP_MODE", file_mode or "read")
+    env_mode = environment.get("PROTONMAIL_MCP_MODE")
+    mode = env_mode or file_mode or "read"
     if mode not in _MODE_PRESETS:
         raise PolicyError(f"unknown mode {mode!r}; expected one of: {', '.join(MODES)}")
+    global_explicit = env_mode is not None or file_mode is not None
 
     flags = dict(_MODE_PRESETS[mode])
     overrides = _table(data, "capabilities")
@@ -147,6 +212,41 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
         if not isinstance(value, bool):
             raise PolicyError(f"policy.toml: capability {name!r} must be a boolean")
         flags[name] = value
+
+    profiles = _parse_profiles(data)
+    profile_name = "default"
+    if profiles:
+        file_default = policy_table.get("default_profile")
+        if file_default is not None and (
+            not isinstance(file_default, str) or not file_default.strip()
+        ):
+            raise PolicyError("policy.toml: policy.default_profile must be a non-empty string")
+        requested = (environment.get("PROTONMAIL_MCP_PROFILE") or file_default or "").strip()
+        if not requested:
+            raise PolicyError(
+                "policy.toml defines profiles; set policy.default_profile or "
+                f"PROTONMAIL_MCP_PROFILE to one of: {', '.join(sorted(profiles))}"
+            )
+        if requested not in profiles:
+            raise PolicyError(
+                f"unknown profile {requested!r}; available: {', '.join(sorted(profiles))}"
+            )
+        profile_name = requested
+        active_profile = profiles[requested]
+        if active_profile.mode:
+            profile_flags = _MODE_PRESETS[active_profile.mode]
+            if global_explicit:
+                flags = {
+                    capability: flags.get(capability, False)
+                    and profile_flags.get(capability, False)
+                    for capability in CAPABILITY_NAMES
+                }
+            else:
+                flags = {
+                    capability: profile_flags.get(capability, False)
+                    and overrides.get(capability, True)
+                    for capability in CAPABILITY_NAMES
+                }
 
     confirmations = _table(data, "confirmations")
     ttl = confirmations.get("ttl_seconds", DEFAULT_CONFIRMATION_TTL_SECONDS)
@@ -268,4 +368,6 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
             excluded_folders=tuple(excluded),
             max_body_chars=max_body_chars,
         ),
+        profile_name=profile_name,
+        profiles=profiles,
     )
