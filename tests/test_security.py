@@ -53,6 +53,7 @@ ORGANIZE_TOOLS = {
     "prepare_undo_move",
     "commit_undo_move",
 }
+SEND_TOOLS = {"prepare_send_draft", "commit_send_draft"}
 
 
 def tools_of(capabilities: Capabilities) -> dict[str, Any]:
@@ -75,13 +76,14 @@ def test_capability_matrix_exposes_exact_tools() -> None:
         ),
         "send": (
             Capabilities(draft=True, organize=True, send=True),
-            ALWAYS_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
+            ALWAYS_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS | SEND_TOOLS,
         ),
         "delete": (
             Capabilities(True, True, True, True),
-            ALWAYS_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
+            ALWAYS_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS | SEND_TOOLS,
         ),
         "organize_only": (Capabilities(organize=True), ALWAYS_TOOLS | ORGANIZE_TOOLS),
+        "send_only": (Capabilities(send=True), ALWAYS_TOOLS | SEND_TOOLS),
     }
     for name, (capabilities, expected) in cases.items():
         assert set(tools_of(capabilities)) == expected, name

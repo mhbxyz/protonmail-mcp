@@ -21,8 +21,14 @@ from protonmail_mcp.models import (
     FolderStatus,
 )
 from protonmail_mcp.parsing import attachment_parts
-from protonmail_mcp.policy import Capabilities, FilesPolicy, Policy
-from protonmail_mcp.server import build_server, server, set_client
+from protonmail_mcp.policy import Capabilities, FilesPolicy, Policy, SendPolicy
+from protonmail_mcp.send import SendError
+from protonmail_mcp.server import (
+    build_server,
+    server,
+    set_client,
+    set_smtp_sender,
+)
 
 
 class FakeMailbox:
@@ -40,6 +46,7 @@ class FakeMailbox:
         self.raw_message: bytes = (
             b"From: a@b.c\nTo: d@e.f\nSubject: s\nMessage-ID: <raw@test>\n\nbody\n"
         )
+        self.draft_raw: bytes = b""
         self.thread: list[EmailSummary] = []
         self.attachments: list[Attachment] = []
 
@@ -157,6 +164,13 @@ class FakeMailbox:
     def remove_label(self, message_ids: list[str], label: str) -> tuple[list[str], list[str]]:
         self.labels_removed.append((list(message_ids), label))
         return list(message_ids), []
+
+    def get_draft_raw(
+        self, message_id: str, folder: str | None = None
+    ) -> tuple[int, bytes]:
+        if 5 not in self.draft_uids:
+            raise MessageNotFoundError(f"No draft with Message-ID {message_id!r}")
+        return 5, self.draft_raw
 
     def get_raw(self, message_id: str, folder: str = "INBOX") -> bytes:
         return self.raw_message
@@ -819,6 +833,179 @@ def test_get_thread_tool() -> None:
         cleanup()
     assert result.is_error in (False, None)
     assert "Root" in result.content[0].text
+
+
+def send_server(tmp_path: Path, **overrides: Any) -> Any:
+    send_policy = SendPolicy(state_path=str(tmp_path / "state.db"), **overrides)
+    policy = Policy(
+        mode="send",
+        capabilities=Capabilities(draft=True, organize=True, send=True),
+        confirmation_ttl_seconds=300,
+        source="test",
+        send=send_policy,
+    )
+    return build_server(policy)
+
+
+def sendable_draft(
+    to: str = "me@proton.me",
+    bcc: str = "me@proton.me",
+    body: str = "Corps",
+    extra: dict[str, str] | None = None,
+) -> bytes:
+    message = StdEmailMessage()
+    message["From"] = "me@proton.me"
+    message["To"] = to
+    if bcc:
+        message["Bcc"] = bcc
+    message["Subject"] = "Hello"
+    message["Message-ID"] = "<draft-send@test>"
+    message.set_content(body)
+    for key, value in (extra or {}).items():
+        message[key] = value
+    return message.as_bytes()
+
+
+class FakeSmtpSender:
+    def __init__(self, fail: bool = False) -> None:
+        self.sent: list[tuple[bytes, tuple[str, ...]]] = []
+        self.fail = fail
+
+    def send(self, payload: bytes, recipients: Any) -> None:
+        if self.fail:
+            raise SendError("SMTP submission failed: simulated")
+        self.sent.append((payload, tuple(recipients)))
+
+
+def test_send_draft_flow(tmp_path: Path) -> None:
+    built = send_server(tmp_path)
+    mailbox = FakeMailbox()
+    mailbox.draft_raw = sendable_draft()
+    sender = FakeSmtpSender()
+    cleanup = with_mailbox(mailbox)
+    set_smtp_sender(sender)  # type: ignore[arg-type]
+    try:
+        prepared = tool_payload(
+            call_built(built, "prepare_send_draft", {"message_id": "<draft-send@test>"})
+        )
+        assert prepared["preview"]["recipients"]["envelope"] == ["me@proton.me"]
+        assert prepared["preview"]["recipients"]["external"] == []
+        assert prepared["preview"]["quota"]["hour_remaining"] >= 0
+
+        mismatched = call_built(
+            built,
+            "commit_send_draft",
+            {"token": prepared["token"], "message_id": "<other@test>"},
+        )
+        assert mismatched.is_error is True
+
+        fresh = tool_payload(
+            call_built(built, "prepare_send_draft", {"message_id": "<draft-send@test>"})
+        )["token"]
+        committed = call_built(
+            built, "commit_send_draft", {"token": fresh, "message_id": "<draft-send@test>"}
+        )
+    finally:
+        set_smtp_sender(None)
+        cleanup()
+    assert committed.is_error in (False, None)
+    assert len(sender.sent) == 1
+    payload, recipients = sender.sent[0]
+    assert recipients == ("me@proton.me",)
+    assert b"Bcc" not in payload.split(b"\n\n", 1)[0]
+    assert mailbox.deleted == [5]
+    assert tool_payload(committed)["duplicate"] is False
+
+
+def test_send_refused_recipient_and_guard(tmp_path: Path) -> None:
+    built = send_server(tmp_path)
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    set_smtp_sender(FakeSmtpSender())  # type: ignore[arg-type]
+    try:
+        mailbox.draft_raw = sendable_draft(to="evil@other.test", bcc="")
+        denied = call_built(
+            built, "prepare_send_draft", {"message_id": "<draft-send@test>"}
+        )
+        mailbox.draft_raw = sendable_draft(extra={"Auto-Submitted": "auto-replied"})
+        guarded = call_built(
+            built, "prepare_send_draft", {"message_id": "<draft-send@test>"}
+        )
+    finally:
+        set_smtp_sender(None)
+        cleanup()
+    assert denied.is_error is True
+    assert "evil@other.test" in denied.content[0].text
+    assert guarded.is_error is True
+    assert "Auto-Submitted" in guarded.content[0].text
+
+
+def test_send_quota_enforced(tmp_path: Path) -> None:
+    built = send_server(tmp_path, max_per_hour=1, max_per_day=1)
+    mailbox = FakeMailbox()
+    mailbox.draft_raw = sendable_draft(body="Premier")
+    sender = FakeSmtpSender()
+    cleanup = with_mailbox(mailbox)
+    set_smtp_sender(sender)  # type: ignore[arg-type]
+    try:
+        token = tool_payload(
+            call_built(built, "prepare_send_draft", {"message_id": "<draft-send@test>"})
+        )["token"]
+        first = call_built(
+            built, "commit_send_draft", {"token": token, "message_id": "<draft-send@test>"}
+        )
+        mailbox.draft_uids.add(5)
+        mailbox.draft_raw = sendable_draft(body="Deuxieme")
+        second = call_built(
+            built, "prepare_send_draft", {"message_id": "<draft-send@test>"}
+        )
+    finally:
+        set_smtp_sender(None)
+        cleanup()
+    assert first.is_error in (False, None)
+    assert second.is_error is True
+    assert "quota" in second.content[0].text
+    assert len(sender.sent) == 1
+
+
+def test_send_delete_failure_and_duplicate_retry(tmp_path: Path) -> None:
+    built = send_server(tmp_path)
+    mailbox = FakeMailbox()
+    mailbox.draft_raw = sendable_draft()
+    sender = FakeSmtpSender()
+    cleanup = with_mailbox(mailbox)
+    set_smtp_sender(sender)  # type: ignore[arg-type]
+
+    def failing_delete(uid: int) -> None:
+        raise MailboxError("simulated deletion failure")
+
+    mailbox.delete_draft = failing_delete  # type: ignore[method-assign]
+    try:
+        token = tool_payload(
+            call_built(built, "prepare_send_draft", {"message_id": "<draft-send@test>"})
+        )["token"]
+        sent = call_built(
+            built, "commit_send_draft", {"token": token, "message_id": "<draft-send@test>"}
+        )
+        same_body = call_built(
+            built, "prepare_send_draft", {"message_id": "<draft-send@test>"}
+        )
+        mailbox.draft_raw = sendable_draft(body="Modifie")
+        token2 = tool_payload(
+            call_built(built, "prepare_send_draft", {"message_id": "<draft-send@test>"})
+        )["token"]
+        retry = call_built(
+            built, "commit_send_draft", {"token": token2, "message_id": "<draft-send@test>"}
+        )
+    finally:
+        set_smtp_sender(None)
+        cleanup()
+    assert sent.is_error in (False, None)
+    assert tool_payload(sent)["warnings"]
+    assert same_body.is_error is True
+    assert "identical body" in same_body.content[0].text
+    assert tool_payload(retry)["duplicate"] is True
+    assert len(sender.sent) == 1
 
 
 def test_create_draft_is_idempotent() -> None:

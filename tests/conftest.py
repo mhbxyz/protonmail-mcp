@@ -15,6 +15,7 @@ def reset_server_state() -> None:
     server_module.CONFIRMATIONS.reset()
     server_module.IDEMPOTENCY.clear()
     server_module.JOURNAL.clear()
+    server_module.set_smtp_sender(None)
 
 
 @pytest.fixture(autouse=True)

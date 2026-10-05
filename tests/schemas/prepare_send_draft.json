@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "folder": {
+      "default": "",
+      "title": "Folder",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id"
+  ],
+  "title": "prepare_send_draftArguments",
+  "type": "object"
+}

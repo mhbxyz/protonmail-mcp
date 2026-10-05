@@ -17,11 +17,20 @@ This server wraps that local IMAP endpoint in a small, auditable set of MCP tool
 
 ## Scope
 
-The current release is **read-only**: it can list folders, list messages, search, and
-read a message. Mailboxes are opened with IMAP `SELECT ... READONLY`, so nothing is
-ever modified — not even the `\Seen` flag. Write tools (drafts, organize, send, delete)
-are on the [roadmap](ROADMAP.md), each gated behind the controls described in
-[SECURITY.md](SECURITY.md).
+Capabilities are opt-in through policy (see [Capability policy](#capability-policy)) and
+enforced server-side:
+
+- **read** (default): folders, messages, search, threads, digests, attachments and `.eml`
+  export into a local sandbox. Mailboxes are opened with IMAP `SELECT ... READONLY`;
+  nothing is modified, not even the `\Seen` flag.
+- **draft**: create, preview, reply/forward, update and delete drafts, all two-phase.
+- **organize**: seen/flagged state, moves with undo, label add/remove.
+- **send**: submit an existing draft through Bridge SMTP after allowlist, quota, size
+  and loop-guard checks.
+- **delete**: permanent deletion, still on the [roadmap](ROADMAP.md).
+
+Every mutation is prepare/commit with payload-bound confirmation tokens; see
+[SECURITY.md](SECURITY.md) for the security model.
 
 ## Tools
 
@@ -53,6 +62,13 @@ name or the aliases `archive` and `trash`), label add/remove for folders under `
 and `prepare_undo_move` to revert the most recent move. Bulk operations are capped
 (`organize.max_bulk`, default 50), Drafts are protected by default, travel to Starred must
 go through flag/unflag, and every mutation is previewed before its commit.
+
+When the `send` capability is enabled, `prepare_send_draft` / `commit_send_draft` submit
+an existing draft through Bridge SMTP. Before anything is transmitted the server checks
+the recipient allowlist, hourly/daily quotas, message size, and loop guards
+(`Auto-Submitted`, `Precedence`, `List-*`, no-reply recipients, thread depth, duplicate
+bodies). The draft is removed only after the SMTP server accepts the message. See
+[docs/send-design.md](docs/send-design.md).
 
 Results are structured (Pydantic models). Every message carries its `Message-ID`; use
 that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronisations.
@@ -198,9 +214,10 @@ non-zero with a clear error if the configuration or the Bridge session is wrong.
 - Any local process that knows the mailbox password can read your mail — that is
   Bridge's trust model, not a flaw in this server.
 
-Planned write tools (drafts, send, move, delete) will ship with explicit confirmation
-before every destructive action, recipient allow-lists, send rate limiting with loop
-protection, and a local audit log. Autonomous send/delete will never be the default.
+Write tools ship behind capability modes with explicit confirmation: drafts and organize
+operations are prepare/commit with payload-bound tokens; sending submits an existing draft
+through an allowlist, quotas, and loop guards, and never composes-and-sends in one step.
+Permanent deletion remains on the roadmap. Autonomous send or delete is never the default.
 
 Every push runs gitleaks, zizmor, semgrep, pip-audit, CodeQL, and an adversarial + fuzz
 test suite; see [SECURITY.md](SECURITY.md) for the full list of gates and the structural

@@ -281,6 +281,24 @@ class BridgeClient:
 
         return self._run(operation)
 
+    def get_draft_raw(self, message_id: str, folder: str | None = None) -> tuple[int, bytes]:
+        target = folder or self.find_drafts_folder()
+
+        def operation(client: IMAPClient) -> tuple[int, bytes]:
+            client.select_folder(target, readonly=True)
+            uids = client.search(["HEADER", "Message-ID", message_id])
+            if not uids:
+                raise MessageNotFoundError(
+                    f"No draft with Message-ID {message_id!r} in {target!r}"
+                )
+            uid = uids[-1]
+            item = self._fetch_body_guarded(
+                client, uid, f"Draft {message_id!r} vanished while fetching"
+            )
+            return uid, _as_bytes(item.get(b"BODY[]"))
+
+        return self._run(operation)
+
     def append_to_drafts(self, raw: bytes) -> int:
         folder = self.find_drafts_folder()
 

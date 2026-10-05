@@ -101,6 +101,13 @@ class DraftDeleted(BaseModel):
     message_id: str
 
 
+class DraftSent(BaseModel):
+    message_id: str
+    recipients: list[str] = Field(default_factory=list)
+    duplicate: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
 class PreparedAction(BaseModel):
     token: str
     action: str

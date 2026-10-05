@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "folder": {
+      "default": "",
+      "title": "Folder",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "token": {
+      "title": "Token",
+      "type": "string"
+    }
+  },
+  "required": [
+    "token",
+    "message_id"
+  ],
+  "title": "commit_send_draftArguments",
+  "type": "object"
+}

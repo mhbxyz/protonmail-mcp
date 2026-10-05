@@ -39,6 +39,7 @@ from .models import (
     DraftCreated,
     DraftDeleted,
     DraftPreview,
+    DraftSent,
     EmailContent,
     EmailPage,
     EmailSummary,
@@ -50,6 +51,18 @@ from .models import (
 )
 from .parsing import AttachmentPart
 from .policy import Policy, load_policy
+from .send import (
+    SendError,
+    SmtpSender,
+    Transmission,
+    body_digest,
+    denied_recipients,
+    external_recipients,
+    guard_reasons,
+    send_key,
+    transmission_from_raw,
+)
+from .state import SendState
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 LOCAL_WRITE = ToolAnnotations(
@@ -66,6 +79,22 @@ _client_lock = threading.Lock()
 _client: BridgeClient | None = None
 
 AUDIT = AuditLog.from_env()
+
+_smtp_sender: SmtpSender | None = None
+
+
+def get_smtp_sender() -> SmtpSender:
+    global _smtp_sender
+    with _client_lock:
+        if _smtp_sender is None:
+            _smtp_sender = SmtpSender(get_client().config)
+        return _smtp_sender
+
+
+def set_smtp_sender(sender: SmtpSender | None) -> None:
+    global _smtp_sender
+    with _client_lock:
+        _smtp_sender = sender
 
 
 def _audited(action: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -316,6 +345,46 @@ def _undo_payload(entry_id: int) -> dict[str, Any]:
     return {"action": "undo_move", "entry_id": entry_id}
 
 
+def _send_payload(message_id: str, folder: str) -> dict[str, Any]:
+    return {"action": "send_draft", "message_id": message_id, "folder": folder}
+
+
+def _resolve_draft_folder(client: BridgeClient, requested: str) -> str:
+    drafts = client.find_drafts_folder()
+    if requested and requested != drafts:
+        raise MailboxError(f"only drafts in {drafts!r} can be sent")
+    return drafts
+
+
+def _check_sendable(
+    client: BridgeClient,
+    policy: Policy,
+    state: SendState,
+    raw: bytes,
+    transmission: Transmission,
+) -> None:
+    if not transmission.envelope:
+        raise SendError("the draft has no recipients")
+    denied = denied_recipients(transmission.envelope, client.config.username, policy.send)
+    if denied:
+        raise SendError(f"recipients not allowed by policy: {', '.join(denied)}")
+    if len(transmission.envelope) > policy.send.max_recipients:
+        raise SendError(
+            f"too many recipients: {len(transmission.envelope)} > {policy.send.max_recipients}"
+        )
+    if len(transmission.payload) > policy.send.max_message_bytes:
+        raise SendError(
+            f"message is too large to send ({len(transmission.payload)} bytes; "
+            f"limit {policy.send.max_message_bytes})"
+        )
+    allowed, reason = state.can_send(policy.send)
+    if not allowed:
+        raise SendError(reason)
+    reasons = guard_reasons(raw, transmission, policy.send, state)
+    if reasons:
+        raise SendError("send refused: " + "; ".join(reasons))
+
+
 def _select_attachment(
     parts: Sequence[AttachmentPart],
     filename: str | None,
@@ -356,6 +425,7 @@ def _undo_preview(entry: MoveEntry) -> PreparedAction:
 
 def build_server(policy: Policy) -> MCPServer:
     capabilities = policy.capabilities
+    send_state = SendState.from_policy(policy) if capabilities.send else None
     draft_hint = ""
     if capabilities.draft:
         draft_hint = (
@@ -372,6 +442,13 @@ def build_server(policy: Policy) -> MCPServer:
             "'archive' and 'trash'), label add/remove, and undoing the last move. Bulk "
             "operations are capped and always previewed before commit."
         )
+    send_hint = ""
+    if capabilities.send:
+        send_hint = (
+            " Send tools are enabled: prepare_send_draft / commit_send_draft submit an "
+            "existing draft through Bridge SMTP after allowlist, quota, and loop-guard "
+            "checks; the draft is removed only after submission succeeds."
+        )
     server = MCPServer(
         name="protonmail",
         title="Proton Mail",
@@ -384,6 +461,7 @@ def build_server(policy: Policy) -> MCPServer:
             "Message-ID. Tools outside the active mode are not registered."
             + draft_hint
             + organize_hint
+            + send_hint
         ),
     )
 
@@ -1352,6 +1430,103 @@ def build_server(policy: Policy) -> MCPServer:
                     missing=missing,
                 )
             except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+    if capabilities.send:
+
+        @server.tool(annotations=WRITE_ACTION)
+        @_audited("prepare_send_draft")
+        def prepare_send_draft(message_id: str, folder: str = "") -> PreparedAction:
+            """Prepare sending an existing draft through Bridge SMTP. Runs the recipient
+            allowlist, quota, size and loop-guard checks and returns a preview plus a
+            single-use token; nothing is sent until commit_send_draft is called with the
+            same arguments and the token.
+
+            Args:
+                message_id: Message-ID of the draft, as returned by list_drafts.
+                folder: Drafts folder; empty uses the folder flagged \\Drafts.
+            """
+            try:
+                client = get_client()
+                state = send_state
+                if state is None:
+                    raise SendError("send state is not initialized")
+                resolved_folder = _resolve_draft_folder(client, folder)
+                uid, raw = client.get_draft_raw(message_id, resolved_folder)
+                transmission = transmission_from_raw(raw)
+                _check_sendable(client, policy, state, raw, transmission)
+                preview = {
+                    "draft": {
+                        "message_id": message_id,
+                        "folder": resolved_folder,
+                        "uid": uid,
+                        "subject": transmission.subject,
+                    },
+                    "recipients": {
+                        "to": list(transmission.to),
+                        "cc": list(transmission.cc),
+                        "bcc": list(transmission.bcc),
+                        "envelope": list(transmission.envelope),
+                        "external": external_recipients(
+                            transmission.envelope, client.config.username
+                        ),
+                    },
+                    "attachments": list(transmission.attachments),
+                    "body_preview": transmission.body[:200],
+                    "payload_hash": transmission.payload_hash,
+                    "quota": state.quota_status(policy.send),
+                    "warnings": list(transmission.warnings),
+                }
+                return _prepared_action(
+                    CONFIRMATIONS.prepare(
+                        "send_draft",
+                        _send_payload(message_id, resolved_folder),
+                        preview=preview,
+                    )
+                )
+            except (ConfigError, MailboxError, SendError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
+        @_audited("commit_send_draft")
+        def commit_send_draft(token: str, message_id: str, folder: str = "") -> DraftSent:
+            """Commit a prepared send: re-runs every check, submits the draft through
+            Bridge SMTP, records the quota/idempotency state, then removes the draft. The
+            token and every argument must match prepare_send_draft.
+
+            Args:
+                token: Token returned by prepare_send_draft.
+                message_id: Message-ID of the draft.
+                folder: Drafts folder; empty uses the folder flagged \\Drafts.
+            """
+            try:
+                client = get_client()
+                state = send_state
+                if state is None:
+                    raise SendError("send state is not initialized")
+                resolved_folder = _resolve_draft_folder(client, folder)
+                CONFIRMATIONS.commit(token, _send_payload(message_id, resolved_folder))
+                key = send_key(message_id, resolved_folder)
+                if state.is_duplicate(key, policy.send.duplicate_window_seconds):
+                    return DraftSent(message_id=message_id, duplicate=True)
+                uid, raw = client.get_draft_raw(message_id, resolved_folder)
+                transmission = transmission_from_raw(raw)
+                _check_sendable(client, policy, state, raw, transmission)
+                get_smtp_sender().send(transmission.payload, transmission.envelope)
+                state.record_send(message_id)
+                state.remember_key(key)
+                state.remember_body(body_digest(transmission.body))
+                warnings: list[str] = []
+                try:
+                    client.delete_draft(uid)
+                except MailboxError as exc:
+                    warnings.append(f"sent, but the draft could not be deleted: {exc}")
+                return DraftSent(
+                    message_id=message_id,
+                    recipients=list(transmission.envelope),
+                    warnings=warnings,
+                )
+            except (ConfigError, MailboxError, SendError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
     return server
