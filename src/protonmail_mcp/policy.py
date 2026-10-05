@@ -46,12 +46,21 @@ class Capabilities:
 
 
 @dataclass(frozen=True, slots=True)
+class OrganizePolicy:
+    max_bulk: int = 50
+    protect_drafts: bool = True
+    allowed_targets: tuple[str, ...] = ()
+    label_allowlist: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Policy:
     mode: str
     capabilities: Capabilities
     confirmation_ttl_seconds: int
     source: str
     idempotency_window_seconds: int = DEFAULT_IDEMPOTENCY_WINDOW_SECONDS
+    organize: OrganizePolicy = OrganizePolicy()
 
 
 def effective_mode(capabilities: Capabilities) -> str:
@@ -120,10 +129,33 @@ def load_policy(env: dict[str, str] | None = None) -> Policy:
             "policy.toml: idempotency.window_seconds must be a non-negative integer"
         )
 
+    organize = _table(data, "organize")
+    max_bulk = organize.get("max_bulk", 50)
+    if isinstance(max_bulk, bool) or not isinstance(max_bulk, int) or max_bulk <= 0:
+        raise PolicyError("policy.toml: organize.max_bulk must be a positive integer")
+    protect_drafts = organize.get("protect_drafts", True)
+    if not isinstance(protect_drafts, bool):
+        raise PolicyError("policy.toml: organize.protect_drafts must be a boolean")
+    targets = organize.get("allowed_targets", [])
+    labels = organize.get("label_allowlist", [])
+    for name, value in (("allowed_targets", targets), ("label_allowlist", labels)):
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item for item in value
+        ):
+            raise PolicyError(
+                f"policy.toml: organize.{name} must be a list of non-empty strings"
+            )
+
     return Policy(
         mode=mode,
         capabilities=Capabilities(**flags),
         confirmation_ttl_seconds=ttl,
         source=str(path) if exists else "defaults",
         idempotency_window_seconds=window,
+        organize=OrganizePolicy(
+            max_bulk=max_bulk,
+            protect_drafts=protect_drafts,
+            allowed_targets=tuple(targets),
+            label_allowlist=tuple(labels),
+        ),
     )

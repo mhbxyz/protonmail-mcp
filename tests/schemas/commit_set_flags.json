@@ -1,0 +1,31 @@
+{
+  "properties": {
+    "action": {
+      "title": "Action",
+      "type": "string"
+    },
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "message_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Message Ids",
+      "type": "array"
+    },
+    "token": {
+      "title": "Token",
+      "type": "string"
+    }
+  },
+  "required": [
+    "token",
+    "message_ids",
+    "action"
+  ],
+  "title": "commit_set_flagsArguments",
+  "type": "object"
+}

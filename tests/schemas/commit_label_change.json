@@ -1,0 +1,36 @@
+{
+  "properties": {
+    "add": {
+      "default": true,
+      "title": "Add",
+      "type": "boolean"
+    },
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "label": {
+      "title": "Label",
+      "type": "string"
+    },
+    "message_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Message Ids",
+      "type": "array"
+    },
+    "token": {
+      "title": "Token",
+      "type": "string"
+    }
+  },
+  "required": [
+    "token",
+    "message_ids",
+    "label"
+  ],
+  "title": "commit_label_changeArguments",
+  "type": "object"
+}

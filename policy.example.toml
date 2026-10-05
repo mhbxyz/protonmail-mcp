@@ -21,3 +21,9 @@ ttl_seconds = 300
 
 [idempotency]
 # window_seconds = 300   # 0 disables duplicate-draft suppression
+
+[organize]
+max_bulk = 50
+protect_drafts = true
+# allowed_targets = ["Archive", "Folders/Newsletters"]   # empty = all valid targets
+# label_allowlist = ["Labels/Important"]                  # empty = all Labels/* folders

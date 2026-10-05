@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "entry_id": {
+      "title": "Entry Id",
+      "type": "integer"
+    },
+    "token": {
+      "title": "Token",
+      "type": "string"
+    }
+  },
+  "required": [
+    "token",
+    "entry_id"
+  ],
+  "title": "commit_undo_moveArguments",
+  "type": "object"
+}

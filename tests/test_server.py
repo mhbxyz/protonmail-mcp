@@ -23,9 +23,24 @@ class FakeMailbox:
         self.deleted: list[int] = []
         self.next_uid = 42
         self.draft_uids: set[int] = {5}
+        self.flag_changes: list[tuple[list[str], str, tuple[str, ...], tuple[str, ...]]] = []
+        self.moves: list[tuple[list[str], str, str]] = []
+        self.labels_added: list[tuple[list[str], str, str]] = []
+        self.labels_removed: list[tuple[list[str], str]] = []
 
     def list_folders(self) -> list[Folder]:
-        return [Folder(name="INBOX"), Folder(name="Projets")]
+        return [
+            Folder(name="INBOX"),
+            Folder(name="Archive", flags=["\\Archive"]),
+            Folder(name="Trash", flags=["\\Trash"]),
+            Folder(name="Drafts", flags=["\\Drafts"]),
+            Folder(name="All Mail", flags=["\\All"]),
+            Folder(name="Starred", flags=["\\Flagged"]),
+            Folder(name="Labels", selectable=False),
+            Folder(name="Labels/Important"),
+            Folder(name="Labels/To pay"),
+            Folder(name="Folders/Finance"),
+        ]
 
     def list_emails(self, **kwargs: Any) -> list[EmailSummary]:
         return [
@@ -95,6 +110,32 @@ class FakeMailbox:
         self.draft_uids.discard(uid)
         self.deleted.append(uid)
 
+    def set_flags(
+        self,
+        message_ids: list[str],
+        folder: str,
+        add: tuple[str, ...] = (),
+        remove: tuple[str, ...] = (),
+    ) -> tuple[list[str], list[str]]:
+        self.flag_changes.append((list(message_ids), folder, tuple(add), tuple(remove)))
+        return list(message_ids), []
+
+    def move_messages(
+        self, message_ids: list[str], source: str, destination: str
+    ) -> tuple[list[str], list[str]]:
+        self.moves.append((list(message_ids), source, destination))
+        return list(message_ids), []
+
+    def add_label(
+        self, message_ids: list[str], folder: str, label: str
+    ) -> tuple[list[str], list[str]]:
+        self.labels_added.append((list(message_ids), folder, label))
+        return list(message_ids), []
+
+    def remove_label(self, message_ids: list[str], label: str) -> tuple[list[str], list[str]]:
+        self.labels_removed.append((list(message_ids), label))
+        return list(message_ids), []
+
 
 class BrokenMailbox(FakeMailbox):
     def list_folders(self) -> list[Folder]:
@@ -128,6 +169,16 @@ def draft_server() -> Any:
     policy = Policy(
         mode="draft",
         capabilities=Capabilities(draft=True),
+        confirmation_ttl_seconds=300,
+        source="test",
+    )
+    return build_server(policy)
+
+
+def organize_server() -> Any:
+    policy = Policy(
+        mode="organize",
+        capabilities=Capabilities(draft=True, organize=True),
         confirmation_ttl_seconds=300,
         source="test",
     )
@@ -381,6 +432,220 @@ def test_forward_draft_flow() -> None:
     assert committed.is_error in (False, None)
     assert len(mailbox.created) == 1
     assert b"Fwd: Hello" in mailbox.created[0]
+
+
+ORGANIZE_IDS = ["<a@example.com>", "<b@example.com>"]
+
+
+def test_organize_tools_are_gated_by_capability() -> None:
+    read_policy = Policy(
+        mode="read",
+        capabilities=Capabilities(),
+        confirmation_ttl_seconds=300,
+        source="test",
+    )
+    read_tools = {tool.name for tool in asyncio.run(build_server(read_policy).list_tools())}
+    assert "commit_move" not in read_tools
+    assert "prepare_set_flags" not in read_tools
+
+    organize_tools = {tool.name for tool in asyncio.run(organize_server().list_tools())}
+    assert {
+        "prepare_set_flags",
+        "commit_set_flags",
+        "prepare_move",
+        "commit_move",
+        "prepare_label_change",
+        "commit_label_change",
+        "prepare_undo_move",
+        "commit_undo_move",
+    } <= organize_tools
+
+
+def test_set_flags_flow() -> None:
+    built = organize_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        prepared = tool_payload(
+            call_built(
+                built,
+                "prepare_set_flags",
+                {"message_ids": ORGANIZE_IDS, "action": "read"},
+            )
+        )
+        assert prepared["preview"]["folder"] == "INBOX"
+        committed = call_built(
+            built,
+            "commit_set_flags",
+            {"token": prepared["token"], "message_ids": ORGANIZE_IDS, "action": "read"},
+        )
+    finally:
+        cleanup()
+    assert committed.is_error in (False, None)
+    assert mailbox.flag_changes == [(ORGANIZE_IDS, "INBOX", ("\\Seen",), ())]
+    assert tool_payload(committed)["updated"] == ORGANIZE_IDS
+
+
+def test_set_flags_rejects_invalid_action_and_protected_folder() -> None:
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        bad_action = call_built(
+            organize_server(),
+            "prepare_set_flags",
+            {"message_ids": ORGANIZE_IDS, "action": "burn"},
+        )
+        protected = call_built(
+            organize_server(),
+            "prepare_set_flags",
+            {"message_ids": ORGANIZE_IDS, "action": "read", "folder": "Drafts"},
+        )
+    finally:
+        cleanup()
+    assert bad_action.is_error is True
+    assert protected.is_error is True
+    assert "protect" in protected.content[0].text
+
+
+def test_move_flow_and_undo() -> None:
+    built = organize_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        prepared = tool_payload(
+            call_built(
+                built,
+                "prepare_move",
+                {"message_ids": ORGANIZE_IDS, "destination": "archive"},
+            )
+        )
+        assert prepared["preview"]["destination"] == "Archive"
+        mismatched = call_built(
+            built,
+            "commit_move",
+            {"token": prepared["token"], "message_ids": ORGANIZE_IDS, "destination": "trash"},
+        )
+        assert mismatched.is_error is True
+
+        fresh = tool_payload(
+            call_built(
+                built,
+                "prepare_move",
+                {"message_ids": ORGANIZE_IDS, "destination": "archive"},
+            )
+        )["token"]
+        moved = call_built(
+            built,
+            "commit_move",
+            {"token": fresh, "message_ids": ORGANIZE_IDS, "destination": "archive"},
+        )
+        assert moved.is_error in (False, None)
+
+        undo_prepared = tool_payload(call_built(built, "prepare_undo_move", {}))
+        entry_id = undo_prepared["preview"]["entry"]["id"]
+        bad_undo = call_built(
+            built,
+            "commit_undo_move",
+            {"token": undo_prepared["token"], "entry_id": entry_id + 1},
+        )
+        assert bad_undo.is_error is True
+
+        undo_fresh = tool_payload(call_built(built, "prepare_undo_move", {}))
+        undone = call_built(
+            built,
+            "commit_undo_move",
+            {"token": undo_fresh["token"], "entry_id": entry_id},
+        )
+    finally:
+        cleanup()
+    assert undone.is_error in (False, None)
+    assert mailbox.moves == [
+        (ORGANIZE_IDS, "INBOX", "Archive"),
+        (ORGANIZE_IDS, "Archive", "INBOX"),
+    ]
+    assert tool_payload(undone)["destination"] == "INBOX"
+
+
+def test_move_enforces_cap_and_starred_protection() -> None:
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        too_many = call_built(
+            organize_server(),
+            "prepare_move",
+            {"message_ids": [f"<m{i}@x>" for i in range(51)], "destination": "archive"},
+        )
+        starred = call_built(
+            organize_server(),
+            "prepare_move",
+            {"message_ids": ORGANIZE_IDS, "destination": "Starred"},
+        )
+    finally:
+        cleanup()
+    assert too_many.is_error is True
+    assert "too many messages" in too_many.content[0].text
+    assert starred.is_error is True
+    assert "flag/unflag" in starred.content[0].text
+
+
+def test_label_flow_add_and_remove() -> None:
+    built = organize_server()
+    mailbox = FakeMailbox()
+    cleanup = with_mailbox(mailbox)
+    try:
+        prepared_add = tool_payload(
+            call_built(
+                built,
+                "prepare_label_change",
+                {"message_ids": ORGANIZE_IDS, "label": "Labels/To pay"},
+            )
+        )
+        added = call_built(
+            built,
+            "commit_label_change",
+            {
+                "token": prepared_add["token"],
+                "message_ids": ORGANIZE_IDS,
+                "label": "Labels/To pay",
+            },
+        )
+        prepared_remove = tool_payload(
+            call_built(
+                built,
+                "prepare_label_change",
+                {"message_ids": ORGANIZE_IDS, "label": "Labels/To pay", "add": False},
+            )
+        )
+        removed = call_built(
+            built,
+            "commit_label_change",
+            {
+                "token": prepared_remove["token"],
+                "message_ids": ORGANIZE_IDS,
+                "label": "Labels/To pay",
+                "add": False,
+            },
+        )
+        rejected = call_built(
+            organize_server(),
+            "prepare_label_change",
+            {"message_ids": ORGANIZE_IDS, "label": "Folders/Finance"},
+        )
+    finally:
+        cleanup()
+    assert added.is_error in (False, None)
+    assert removed.is_error in (False, None)
+    assert rejected.is_error is True
+    assert mailbox.labels_added == [(ORGANIZE_IDS, "INBOX", "Labels/To pay")]
+    assert mailbox.labels_removed == [(ORGANIZE_IDS, "Labels/To pay")]
+
+
+def test_undo_without_moves_is_an_error() -> None:
+    cleanup = with_mailbox(FakeMailbox())
+    try:
+        result = call_built(organize_server(), "prepare_undo_move", {})
+    finally:
+        cleanup()
+    assert result.is_error is True
+    assert "no move to undo" in result.content[0].text
 
 
 def test_create_draft_is_idempotent() -> None:

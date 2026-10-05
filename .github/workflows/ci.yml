@@ -33,6 +33,7 @@ jobs:
           --cov=protonmail_mcp.compose
           --cov=protonmail_mcp.audit
           --cov=protonmail_mcp.idempotency
+          --cov=protonmail_mcp.journal
           --cov=protonmail_mcp.bridge
           --cov=protonmail_mcp.parsing
           --cov-fail-under=88

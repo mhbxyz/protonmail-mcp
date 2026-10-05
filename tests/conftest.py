@@ -14,6 +14,7 @@ from protonmail_mcp import server as server_module  # noqa: E402
 def reset_server_state() -> None:
     server_module.CONFIRMATIONS.reset()
     server_module.IDEMPOTENCY.clear()
+    server_module.JOURNAL.clear()
 
 
 @pytest.fixture(autouse=True)

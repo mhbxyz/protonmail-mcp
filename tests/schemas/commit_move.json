@@ -1,0 +1,31 @@
+{
+  "properties": {
+    "destination": {
+      "default": "",
+      "title": "Destination",
+      "type": "string"
+    },
+    "message_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Message Ids",
+      "type": "array"
+    },
+    "source": {
+      "default": "INBOX",
+      "title": "Source",
+      "type": "string"
+    },
+    "token": {
+      "title": "Token",
+      "type": "string"
+    }
+  },
+  "required": [
+    "token",
+    "message_ids"
+  ],
+  "title": "commit_moveArguments",
+  "type": "object"
+}

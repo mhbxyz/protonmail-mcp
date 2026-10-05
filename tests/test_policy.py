@@ -115,6 +115,42 @@ def test_invalid_idempotency_window(tmp_path: Path) -> None:
         load_policy(env=env_for(tmp_path))
 
 
+def test_organize_defaults(tmp_path: Path) -> None:
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.organize.max_bulk == 50
+    assert policy.organize.protect_drafts is True
+    assert policy.organize.allowed_targets == ()
+    assert policy.organize.label_allowlist == ()
+
+
+def test_organize_overrides(tmp_path: Path) -> None:
+    write_policy(
+        tmp_path,
+        "[organize]\n"
+        "max_bulk = 5\n"
+        "protect_drafts = false\n"
+        'allowed_targets = ["Archive"]\n'
+        'label_allowlist = ["Labels/Important"]\n',
+    )
+    policy = load_policy(env=env_for(tmp_path))
+    assert policy.organize.max_bulk == 5
+    assert policy.organize.protect_drafts is False
+    assert policy.organize.allowed_targets == ("Archive",)
+    assert policy.organize.label_allowlist == ("Labels/Important",)
+
+
+def test_invalid_organize_values(tmp_path: Path) -> None:
+    write_policy(tmp_path, "[organize]\nmax_bulk = 0\n")
+    with pytest.raises(PolicyError, match="max_bulk"):
+        load_policy(env=env_for(tmp_path))
+    write_policy(tmp_path, '[organize]\nprotect_drafts = "yes"\n')
+    with pytest.raises(PolicyError, match="protect_drafts"):
+        load_policy(env=env_for(tmp_path))
+    write_policy(tmp_path, "[organize]\nallowed_targets = [1]\n")
+    with pytest.raises(PolicyError, match="allowed_targets"):
+        load_policy(env=env_for(tmp_path))
+
+
 def test_effective_mode_for_presets_and_custom() -> None:
     assert effective_mode(Capabilities()) == "read"
     assert effective_mode(Capabilities(draft=True)) == "draft"

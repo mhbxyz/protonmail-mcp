@@ -32,6 +32,18 @@ DRAFT_TOOLS = {
 HEADER = b"From: a@b.c\nTo: d@e.f\nSubject: x\nMessage-ID: <h@x>\n\n"
 
 
+ORGANIZE_TOOLS = {
+    "prepare_set_flags",
+    "commit_set_flags",
+    "prepare_move",
+    "commit_move",
+    "prepare_label_change",
+    "commit_label_change",
+    "prepare_undo_move",
+    "commit_undo_move",
+}
+
+
 def tools_of(capabilities: Capabilities) -> dict[str, Any]:
     policy = Policy(
         mode="custom",
@@ -46,16 +58,26 @@ def test_capability_matrix_exposes_exact_tools() -> None:
     cases = {
         "read": (Capabilities(), READ_TOOLS),
         "draft": (Capabilities(draft=True), READ_TOOLS | DRAFT_TOOLS),
-        "organize": (Capabilities(draft=True, organize=True), READ_TOOLS | DRAFT_TOOLS),
-        "send": (Capabilities(draft=True, organize=True, send=True), READ_TOOLS | DRAFT_TOOLS),
-        "delete": (Capabilities(True, True, True, True), READ_TOOLS | DRAFT_TOOLS),
+        "organize": (
+            Capabilities(draft=True, organize=True),
+            READ_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
+        ),
+        "send": (
+            Capabilities(draft=True, organize=True, send=True),
+            READ_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
+        ),
+        "delete": (
+            Capabilities(True, True, True, True),
+            READ_TOOLS | DRAFT_TOOLS | ORGANIZE_TOOLS,
+        ),
+        "organize_only": (Capabilities(organize=True), READ_TOOLS | ORGANIZE_TOOLS),
     }
     for name, (capabilities, expected) in cases.items():
         assert set(tools_of(capabilities)) == expected, name
 
 
 def test_commit_tools_require_token_and_are_destructive() -> None:
-    tools = tools_of(Capabilities(draft=True))
+    tools = tools_of(Capabilities(True, True, True, True))
     for name, tool in tools.items():
         if name.startswith("commit_"):
             assert "token" in tool.input_schema.get("properties", {}), name
@@ -68,7 +90,7 @@ def test_commit_tools_require_token_and_are_destructive() -> None:
 
 
 def test_prepare_commit_pairs_are_complete() -> None:
-    names = set(tools_of(Capabilities(draft=True)))
+    names = set(tools_of(Capabilities(True, True, True, True)))
     commits = {name for name in names if name.startswith("commit_")}
     prepares = {name for name in names if name.startswith("prepare_")}
     assert commits

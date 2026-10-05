@@ -41,17 +41,22 @@ class FakeIMAPClient:
         folders: list[tuple[Any, Any, str]] | None = None,
         search_results: list[int] | None = None,
         fetch_results: dict[int, dict[bytes, Any]] | None = None,
+        search_queue: list[list[int]] | None = None,
     ) -> None:
         self.folders = folders or []
         self.search_results = search_results or []
         self.fetch_results = fetch_results or {}
+        self.search_queue = list(search_queue) if search_queue is not None else None
         self.selected: tuple[str, bool] | None = None
         self.last_criteria: Any = None
         self.logged_out = False
         self.appended: list[tuple[str, bytes, tuple[Any, ...], Any]] = []
         self.append_response: Any = b"[APPENDUID 1 7] APPEND"
         self.added_flags: list[tuple[list[int], list[str]]] = []
+        self.removed_flags: list[tuple[list[int], list[str]]] = []
         self.expunged: list[list[int] | None] = []
+        self.moves: list[tuple[list[int], str]] = []
+        self.copies: list[tuple[list[int], str]] = []
 
     def list_folders(self) -> list[tuple[Any, Any, str]]:
         return self.folders
@@ -62,6 +67,8 @@ class FakeIMAPClient:
 
     def search(self, criteria: Any) -> list[int]:
         self.last_criteria = criteria
+        if self.search_queue is not None:
+            return self.search_queue.pop(0) if self.search_queue else []
         return self.search_results
 
     def fetch(self, uids: list[int], data: list[str]) -> dict[int, dict[bytes, Any]]:
@@ -76,6 +83,17 @@ class FakeIMAPClient:
 
     def add_flags(self, messages: list[int], flags: list[str], silent: bool = False) -> None:
         self.added_flags.append((list(messages), list(flags)))
+
+    def remove_flags(self, messages: list[int], flags: list[str], silent: bool = False) -> None:
+        self.removed_flags.append((list(messages), list(flags)))
+
+    def move(self, messages: list[int], folder: str) -> dict[Any, Any]:
+        self.moves.append((list(messages), folder))
+        return {}
+
+    def copy(self, messages: list[int], folder: str) -> dict[Any, Any]:
+        self.copies.append((list(messages), folder))
+        return {}
 
     def expunge(self, messages: list[int] | None = None) -> tuple[()]:
         self.expunged.append(list(messages) if messages else None)
@@ -319,3 +337,79 @@ def test_get_draft_rejects_oversized_draft() -> None:
     client = attach(BridgeClient(make_config()), fake)
     with pytest.raises(MailboxError, match="too large"):
         client.get_draft(5)
+
+
+def test_folder_by_flag() -> None:
+    client = attach(BridgeClient(make_config()), FakeIMAPClient(folders=DRAFTS_FOLDERS))
+    assert client.folder_by_flag("\\Drafts") == "Brouillons"
+    assert client.folder_by_flag("\\Trash") is None
+
+
+def test_set_flags_adds_and_removes_by_message_id() -> None:
+    fake = FakeIMAPClient(search_results=[3], fetch_results={3: {b"FLAGS": ()}})
+    client = attach(BridgeClient(make_config()), fake)
+    updated, missing = client.set_flags(
+        ["<m@x>"], "INBOX", add=["\\Seen"], remove=["\\Flagged"]
+    )
+    assert updated == ["<m@x>"]
+    assert missing == []
+    assert fake.added_flags == [([3], ["\\Seen"])]
+    assert fake.removed_flags == [([3], ["\\Flagged"])]
+
+
+def test_set_flags_reports_missing() -> None:
+    client = attach(BridgeClient(make_config()), FakeIMAPClient(search_results=[]))
+    updated, missing = client.set_flags(["<gone@x>"], "INBOX", add=["\\Seen"])
+    assert updated == []
+    assert missing == ["<gone@x>"]
+
+
+def test_move_messages() -> None:
+    fake = FakeIMAPClient(search_results=[4])
+    client = attach(BridgeClient(make_config()), fake)
+    updated, missing = client.move_messages(["<m@x>"], "INBOX", "Archive")
+    assert updated == ["<m@x>"]
+    assert missing == []
+    assert fake.moves == [([4], "Archive")]
+
+
+def test_add_label_copies_and_skips_existing() -> None:
+    fake = FakeIMAPClient(search_queue=[[], [4]])
+    client = attach(BridgeClient(make_config()), fake)
+    updated, missing = client.add_label(["<m@x>"], "INBOX", "Labels/To pay")
+    assert updated == ["<m@x>"]
+    assert missing == []
+    assert fake.copies == [([4], "Labels/To pay")]
+
+    existing = FakeIMAPClient(search_queue=[[7]])
+    client2 = attach(BridgeClient(make_config()), existing)
+    updated2, missing2 = client2.add_label(["<m@x>"], "INBOX", "Labels/To pay")
+    assert updated2 == ["<m@x>"]
+    assert missing2 == []
+    assert existing.copies == []
+
+
+def test_add_label_reports_missing() -> None:
+    fake = FakeIMAPClient(search_queue=[[], []])
+    client = attach(BridgeClient(make_config()), fake)
+    updated, missing = client.add_label(["<gone@x>"], "INBOX", "Labels/To pay")
+    assert updated == []
+    assert missing == ["<gone@x>"]
+
+
+def test_remove_label_deletes_the_label_entry() -> None:
+    fake = FakeIMAPClient(search_queue=[[9]])
+    client = attach(BridgeClient(make_config()), fake)
+    updated, missing = client.remove_label(["<m@x>"], "Labels/To pay")
+    assert updated == ["<m@x>"]
+    assert missing == []
+    assert fake.added_flags == [([9], ["\\Deleted"])]
+    assert fake.expunged == [[9]]
+
+
+def test_remove_label_reports_missing() -> None:
+    fake = FakeIMAPClient(search_queue=[[]])
+    client = attach(BridgeClient(make_config()), fake)
+    updated, missing = client.remove_label(["<m@x>"], "Labels/To pay")
+    assert updated == []
+    assert missing == ["<m@x>"]

@@ -1,0 +1,26 @@
+{
+  "properties": {
+    "action": {
+      "title": "Action",
+      "type": "string"
+    },
+    "folder": {
+      "default": "INBOX",
+      "title": "Folder",
+      "type": "string"
+    },
+    "message_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Message Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "message_ids",
+    "action"
+  ],
+  "title": "prepare_set_flagsArguments",
+  "type": "object"
+}

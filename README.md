@@ -41,6 +41,13 @@ call returns a preview and a single-use token, and nothing changes until the mat
 300 s, `window_seconds = 0` disables it) return the existing draft instead of creating a
 duplicate.
 
+When the `organize` capability is enabled, another set of prepare/commit tools is
+registered: seen/flagged state (`prepare_set_flags`), moves (destination accepts a folder
+name or the aliases `archive` and `trash`), label add/remove for folders under `Labels/`,
+and `prepare_undo_move` to revert the most recent move. Bulk operations are capped
+(`organize.max_bulk`, default 50), Drafts are protected by default, travel to Starred must
+go through flag/unflag, and every mutation is previewed before its commit.
+
 Results are structured (Pydantic models). Every message carries its `Message-ID`; use
 that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronisations.
 
@@ -97,6 +104,12 @@ ttl_seconds = 300
 
 [idempotency]
 window_seconds = 300
+
+[organize]
+max_bulk = 50
+protect_drafts = true
+# allowed_targets = ["Archive", "Folders/Newsletters"]
+# label_allowlist = ["Labels/Important"]
 ```
 
 See [SECURITY.md](SECURITY.md) for the confirmation flow and [ROADMAP.md](ROADMAP.md) for

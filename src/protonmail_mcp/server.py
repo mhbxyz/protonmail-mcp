@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -31,6 +31,7 @@ from .confirmations import (
     payload_digest,
 )
 from .idempotency import DraftReference, IdempotencyStore
+from .journal import MoveEntry, MoveJournal
 from .models import (
     DraftCreated,
     DraftDeleted,
@@ -38,12 +39,13 @@ from .models import (
     EmailContent,
     EmailSummary,
     Folder,
+    OrganizeResult,
     PreparedAction,
 )
 from .policy import Policy, load_policy
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
-WRITE_DRAFT = ToolAnnotations(
+WRITE_ACTION = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=False
 )
 DESTRUCTIVE_WRITE = ToolAnnotations(
@@ -186,6 +188,139 @@ def _remember_draft(key: str, created: DraftCreated) -> None:
     )
 
 
+FLAG_ACTIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "read": (("\\Seen",), ()),
+    "unread": ((), ("\\Seen",)),
+    "flag": (("\\Flagged",), ()),
+    "unflag": ((), ("\\Flagged",)),
+}
+
+
+def _dedupe(message_ids: Sequence[str]) -> list[str]:
+    return list(dict.fromkeys(message_ids))
+
+
+def _check_bulk(policy: Policy, message_ids: Sequence[str]) -> None:
+    if not message_ids:
+        raise MailboxError("message_ids must not be empty")
+    limit = policy.organize.max_bulk
+    if len(message_ids) > limit:
+        raise MailboxError(f"too many messages in one call: {len(message_ids)} > {limit}")
+
+
+def _folders_by_name(client: BridgeClient) -> dict[str, Folder]:
+    return {folder.name: folder for folder in client.list_folders()}
+
+
+def _resolve_source(client: BridgeClient, policy: Policy, folder: str) -> str:
+    target = _folders_by_name(client).get(folder)
+    if target is None:
+        raise MailboxError(f"folder not found: {folder!r}")
+    if not target.selectable:
+        raise MailboxError(f"folder is not selectable: {folder!r}")
+    if "\\All" in target.flags:
+        raise MailboxError("All Mail cannot be modified")
+    if policy.organize.protect_drafts and "\\Drafts" in target.flags:
+        raise MailboxError("Drafts are protected by policy (organize.protect_drafts)")
+    return target.name
+
+
+def _resolve_destination(client: BridgeClient, policy: Policy, destination: str) -> str:
+    folders = _folders_by_name(client)
+    alias = destination.strip().lower()
+    if alias in {"archive", "trash"}:
+        flag = "\\Archive" if alias == "archive" else "\\Trash"
+        match = next((folder for folder in folders.values() if flag in folder.flags), None)
+        if match is None:
+            raise MailboxError(f"no folder with the {flag} attribute was found")
+        resolved = match.name
+    else:
+        match = folders.get(destination)
+        if match is None:
+            raise MailboxError(f"destination folder not found: {destination!r}")
+        resolved = match.name
+    target = folders[resolved]
+    if not target.selectable:
+        raise MailboxError(f"destination is not selectable: {resolved!r}")
+    if "\\All" in target.flags:
+        raise MailboxError("All Mail cannot be a destination")
+    if "\\Flagged" in target.flags:
+        raise MailboxError("use flag/unflag to change the Starred state")
+    if policy.organize.protect_drafts and "\\Drafts" in target.flags:
+        raise MailboxError("Drafts are protected by policy (organize.protect_drafts)")
+    if policy.organize.allowed_targets and resolved not in policy.organize.allowed_targets:
+        raise MailboxError(f"destination not allowed by policy: {resolved!r}")
+    return resolved
+
+
+def _resolve_label(client: BridgeClient, policy: Policy, label: str) -> str:
+    allowed = policy.organize.label_allowlist
+    if allowed:
+        if label not in allowed:
+            raise MailboxError(f"label not allowed by policy: {label!r}")
+    elif not label.startswith("Labels/"):
+        raise MailboxError("only folders under 'Labels/' can be used as labels")
+    match = _folders_by_name(client).get(label)
+    if match is None:
+        raise MailboxError(f"label not found: {label!r}")
+    if not match.selectable:
+        raise MailboxError(f"label is not selectable: {label!r}")
+    return match.name
+
+
+def _flags_payload(
+    message_ids: Sequence[str], flag_action: str, folder: str
+) -> dict[str, Any]:
+    return {
+        "action": "set_flags",
+        "flag_action": flag_action,
+        "folder": folder,
+        "message_ids": list(message_ids),
+    }
+
+
+def _move_payload(
+    message_ids: Sequence[str], source: str, destination: str
+) -> dict[str, Any]:
+    return {
+        "action": "move",
+        "source": source,
+        "destination": destination,
+        "message_ids": list(message_ids),
+    }
+
+
+def _label_payload(
+    message_ids: Sequence[str], folder: str, label: str, add: bool
+) -> dict[str, Any]:
+    return {
+        "action": "label",
+        "label": label,
+        "add": add,
+        "folder": folder,
+        "message_ids": list(message_ids),
+    }
+
+
+def _undo_payload(entry_id: int) -> dict[str, Any]:
+    return {"action": "undo_move", "entry_id": entry_id}
+
+
+def _undo_preview(entry: MoveEntry) -> PreparedAction:
+    preview = {
+        "action": "undo_move",
+        "entry": {
+            "id": entry.id,
+            "source": entry.source,
+            "destination": entry.destination,
+            "count": len(entry.message_ids),
+            "message_ids": list(entry.message_ids),
+        },
+    }
+    prepared = CONFIRMATIONS.prepare("undo_move", _undo_payload(entry.id), preview=preview)
+    return _prepared_action(prepared)
+
+
 def build_server(policy: Policy) -> MCPServer:
     capabilities = policy.capabilities
     draft_hint = ""
@@ -195,6 +330,14 @@ def build_server(policy: Policy) -> MCPServer:
             "prepare/commit pairs for replying, forwarding, updating, and deleting "
             "drafts. Mutations only happen when committing a prepared action with the "
             "token returned by its prepare step."
+        )
+    organize_hint = ""
+    if capabilities.organize:
+        organize_hint = (
+            " Organize tools are enabled: prepare/commit pairs for read/flagged state, "
+            "moving messages (destination accepts a folder name or the aliases "
+            "'archive' and 'trash'), label add/remove, and undoing the last move. Bulk "
+            "operations are capped and always previewed before commit."
         )
     server = MCPServer(
         name="protonmail",
@@ -207,6 +350,7 @@ def build_server(policy: Policy) -> MCPServer:
             "search_emails for full-text search, and read_email to read one message by its "
             "Message-ID. Tools outside the active mode are not registered."
             + draft_hint
+            + organize_hint
         ),
     )
 
@@ -300,7 +444,7 @@ def build_server(policy: Policy) -> MCPServer:
             except (ConfigError, MailboxError) as exc:
                 raise _guard(exc) from exc
 
-        @server.tool(annotations=WRITE_DRAFT)
+        @server.tool(annotations=WRITE_ACTION)
         @_audited("create_draft")
         def create_draft(
             to: str = "",
@@ -361,7 +505,7 @@ def build_server(policy: Policy) -> MCPServer:
             except (ConfigError, MailboxError, ComposeError) as exc:
                 raise _guard(exc) from exc
 
-        @server.tool(annotations=WRITE_DRAFT)
+        @server.tool(annotations=WRITE_ACTION)
         @_audited("prepare_update_draft")
         def prepare_update_draft(
             uid: int,
@@ -447,7 +591,7 @@ def build_server(policy: Policy) -> MCPServer:
             except (ConfigError, MailboxError, ComposeError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
-        @server.tool(annotations=WRITE_DRAFT)
+        @server.tool(annotations=WRITE_ACTION)
         @_audited("prepare_delete_draft")
         def prepare_delete_draft(uid: int) -> PreparedAction:
             """Prepare deleting a draft. Nothing changes until commit_delete_draft is
@@ -491,7 +635,7 @@ def build_server(policy: Policy) -> MCPServer:
             except (ConfigError, MailboxError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
-        @server.tool(annotations=WRITE_DRAFT)
+        @server.tool(annotations=WRITE_ACTION)
         @_audited("prepare_reply_draft")
         def prepare_reply_draft(
             message_id: str,
@@ -579,7 +723,7 @@ def build_server(policy: Policy) -> MCPServer:
             except (ConfigError, MailboxError, ComposeError, ConfirmationError) as exc:
                 raise _guard(exc) from exc
 
-        @server.tool(annotations=WRITE_DRAFT)
+        @server.tool(annotations=WRITE_ACTION)
         @_audited("prepare_forward_draft")
         def prepare_forward_draft(
             message_id: str,
@@ -715,10 +859,297 @@ def build_server(policy: Policy) -> MCPServer:
             except (ConfigError, MailboxError, ComposeError) as exc:
                 raise _guard(exc) from exc
 
+    if capabilities.organize:
+
+        @server.tool(annotations=WRITE_ACTION)
+        @_audited("prepare_set_flags")
+        def prepare_set_flags(
+            message_ids: list[str], action: str, folder: str = "INBOX"
+        ) -> PreparedAction:
+            """Prepare a seen/flagged state change for one or more messages. Nothing
+            changes until commit_set_flags is called with the same arguments and the
+            returned token.
+
+            Args:
+                message_ids: Message-ID values, as returned by list_emails/search_emails.
+                action: One of read, unread, flag, unflag.
+                folder: Folder containing the messages.
+            """
+            try:
+                ids = _dedupe(message_ids)
+                _check_bulk(policy, ids)
+                if action not in FLAG_ACTIONS:
+                    raise MailboxError(
+                        f"action must be one of: {', '.join(sorted(FLAG_ACTIONS))}"
+                    )
+                client = get_client()
+                resolved = _resolve_source(client, policy, folder)
+                preview = {
+                    "action": "set_flags",
+                    "flag_action": action,
+                    "folder": resolved,
+                    "count": len(ids),
+                    "message_ids": ids,
+                }
+                return _prepared_action(
+                    CONFIRMATIONS.prepare(
+                        "set_flags", _flags_payload(ids, action, resolved), preview=preview
+                    )
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
+        @_audited("commit_set_flags")
+        def commit_set_flags(
+            token: str, message_ids: list[str], action: str, folder: str = "INBOX"
+        ) -> OrganizeResult:
+            """Commit a prepared seen/flagged state change. The token and every argument
+            must match prepare_set_flags.
+
+            Args:
+                token: Token returned by prepare_set_flags.
+                message_ids: Message-ID values.
+                action: One of read, unread, flag, unflag.
+                folder: Folder containing the messages.
+            """
+            try:
+                ids = _dedupe(message_ids)
+                _check_bulk(policy, ids)
+                if action not in FLAG_ACTIONS:
+                    raise MailboxError(
+                        f"action must be one of: {', '.join(sorted(FLAG_ACTIONS))}"
+                    )
+                client = get_client()
+                resolved = _resolve_source(client, policy, folder)
+                CONFIRMATIONS.commit(token, _flags_payload(ids, action, resolved))
+                add, remove = FLAG_ACTIONS[action]
+                updated, missing = client.set_flags(ids, resolved, add=add, remove=remove)
+                return OrganizeResult(
+                    action="set_flags",
+                    folder=resolved,
+                    updated=updated,
+                    missing=missing,
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=WRITE_ACTION)
+        @_audited("prepare_move")
+        def prepare_move(
+            message_ids: list[str], source: str = "INBOX", destination: str = ""
+        ) -> PreparedAction:
+            """Prepare moving messages to another folder. Nothing changes until
+            commit_move is called with the same arguments and the returned token.
+
+            Args:
+                message_ids: Message-ID values, as returned by list_emails/search_emails.
+                source: Folder containing the messages.
+                destination: Target folder name, or the aliases 'archive' and 'trash'.
+            """
+            try:
+                ids = _dedupe(message_ids)
+                _check_bulk(policy, ids)
+                client = get_client()
+                resolved_source = _resolve_source(client, policy, source)
+                resolved_destination = _resolve_destination(client, policy, destination)
+                if resolved_destination == resolved_source:
+                    raise MailboxError("source and destination are the same folder")
+                preview = {
+                    "action": "move",
+                    "source": resolved_source,
+                    "destination": resolved_destination,
+                    "count": len(ids),
+                    "message_ids": ids,
+                }
+                return _prepared_action(
+                    CONFIRMATIONS.prepare(
+                        "move",
+                        _move_payload(ids, resolved_source, resolved_destination),
+                        preview=preview,
+                    )
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
+        @_audited("commit_move")
+        def commit_move(
+            token: str,
+            message_ids: list[str],
+            source: str = "INBOX",
+            destination: str = "",
+        ) -> OrganizeResult:
+            """Commit a prepared move. The token and every argument must match
+            prepare_move.
+
+            Args:
+                token: Token returned by prepare_move.
+                message_ids: Message-ID values.
+                source: Folder containing the messages.
+                destination: Target folder name, or the aliases 'archive' and 'trash'.
+            """
+            try:
+                ids = _dedupe(message_ids)
+                _check_bulk(policy, ids)
+                client = get_client()
+                resolved_source = _resolve_source(client, policy, source)
+                resolved_destination = _resolve_destination(client, policy, destination)
+                if resolved_destination == resolved_source:
+                    raise MailboxError("source and destination are the same folder")
+                CONFIRMATIONS.commit(
+                    token, _move_payload(ids, resolved_source, resolved_destination)
+                )
+                updated, missing = client.move_messages(
+                    ids, resolved_source, resolved_destination
+                )
+                if updated:
+                    JOURNAL.record(resolved_source, resolved_destination, updated)
+                return OrganizeResult(
+                    action="move",
+                    folder=resolved_source,
+                    destination=resolved_destination,
+                    updated=updated,
+                    missing=missing,
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=WRITE_ACTION)
+        @_audited("prepare_label_change")
+        def prepare_label_change(
+            message_ids: list[str],
+            label: str,
+            folder: str = "INBOX",
+            add: bool = True,
+        ) -> PreparedAction:
+            """Prepare adding or removing a Proton label on messages. Labels are the
+            folders under 'Labels/'; the message stays in its folder. Nothing changes
+            until commit_label_change is called with the same arguments and the token.
+
+            Args:
+                message_ids: Message-ID values, as returned by list_emails/search_emails.
+                label: Label folder, for example 'Labels/Important'.
+                folder: Folder containing the messages (used when adding).
+                add: True to add the label, False to remove it.
+            """
+            try:
+                ids = _dedupe(message_ids)
+                _check_bulk(policy, ids)
+                client = get_client()
+                resolved_folder = _resolve_source(client, policy, folder)
+                resolved_label = _resolve_label(client, policy, label)
+                preview = {
+                    "action": "add_label" if add else "remove_label",
+                    "label": resolved_label,
+                    "folder": resolved_folder,
+                    "count": len(ids),
+                    "message_ids": ids,
+                }
+                return _prepared_action(
+                    CONFIRMATIONS.prepare(
+                        "label_change",
+                        _label_payload(ids, resolved_folder, resolved_label, add),
+                        preview=preview,
+                    )
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
+        @_audited("commit_label_change")
+        def commit_label_change(
+            token: str,
+            message_ids: list[str],
+            label: str,
+            folder: str = "INBOX",
+            add: bool = True,
+        ) -> OrganizeResult:
+            """Commit a prepared label change. The token and every argument must match
+            prepare_label_change.
+
+            Args:
+                token: Token returned by prepare_label_change.
+                message_ids: Message-ID values.
+                label: Label folder, for example 'Labels/Important'.
+                folder: Folder containing the messages (used when adding).
+                add: True to add the label, False to remove it.
+            """
+            try:
+                ids = _dedupe(message_ids)
+                _check_bulk(policy, ids)
+                client = get_client()
+                resolved_folder = _resolve_source(client, policy, folder)
+                resolved_label = _resolve_label(client, policy, label)
+                CONFIRMATIONS.commit(
+                    token, _label_payload(ids, resolved_folder, resolved_label, add)
+                )
+                if add:
+                    updated, missing = client.add_label(ids, resolved_folder, resolved_label)
+                    action = "add_label"
+                else:
+                    updated, missing = client.remove_label(ids, resolved_label)
+                    action = "remove_label"
+                return OrganizeResult(
+                    action=action,
+                    folder=resolved_folder,
+                    destination=resolved_label,
+                    updated=updated,
+                    missing=missing,
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=WRITE_ACTION)
+        @_audited("prepare_undo_move")
+        def prepare_undo_move() -> PreparedAction:
+            """Prepare undoing the most recent journaled move. Nothing changes until
+            commit_undo_move is called with the returned entry id and token."""
+            try:
+                entry = JOURNAL.last()
+                if entry is None:
+                    raise MailboxError("no move to undo")
+                return _undo_preview(entry)
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
+        @server.tool(annotations=DESTRUCTIVE_WRITE)
+        @_audited("commit_undo_move")
+        def commit_undo_move(token: str, entry_id: int) -> OrganizeResult:
+            """Commit undoing a recently journaled move. The token and entry_id must
+            match prepare_undo_move.
+
+            Args:
+                token: Token returned by prepare_undo_move.
+                entry_id: Move journal entry id from the prepare preview.
+            """
+            try:
+                CONFIRMATIONS.commit(token, _undo_payload(entry_id))
+                entry = JOURNAL.get(entry_id)
+                if entry is None:
+                    raise MailboxError(f"unknown move journal entry {entry_id}")
+                if entry.undone:
+                    raise MailboxError(f"move journal entry {entry_id} is already undone")
+                client = get_client()
+                updated, missing = client.move_messages(
+                    list(entry.message_ids), entry.destination, entry.source
+                )
+                JOURNAL.mark_undone(entry_id)
+                return OrganizeResult(
+                    action="undo_move",
+                    folder=entry.destination,
+                    destination=entry.source,
+                    updated=updated,
+                    missing=missing,
+                )
+            except (ConfigError, MailboxError, ConfirmationError) as exc:
+                raise _guard(exc) from exc
+
     return server
 
 
 POLICY = load_policy()
 CONFIRMATIONS = ConfirmationManager(ttl_seconds=POLICY.confirmation_ttl_seconds)
 IDEMPOTENCY = IdempotencyStore(window_seconds=POLICY.idempotency_window_seconds)
+JOURNAL = MoveJournal()
 server = build_server(POLICY)

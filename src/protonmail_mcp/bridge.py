@@ -184,6 +184,105 @@ class BridgeClient:
 
         self._run(operation)
 
+    def folder_by_flag(self, flag: str) -> str | None:
+        for folder in self.list_folders():
+            if flag in folder.flags:
+                return folder.name
+        return None
+
+    def set_flags(
+        self,
+        message_ids: Sequence[str],
+        folder: str,
+        add: Sequence[str] = (),
+        remove: Sequence[str] = (),
+    ) -> tuple[list[str], list[str]]:
+        def operation(client: IMAPClient) -> tuple[list[str], list[str]]:
+            client.select_folder(folder)
+            updated: list[str] = []
+            missing: list[str] = []
+            for message_id in message_ids:
+                uids = client.search(["HEADER", "Message-ID", message_id])
+                if not uids:
+                    missing.append(message_id)
+                    continue
+                uid = uids[-1]
+                if add:
+                    client.add_flags([uid], list(add))
+                if remove:
+                    client.remove_flags([uid], list(remove))
+                updated.append(message_id)
+            return updated, missing
+
+        return self._run(operation)
+
+    def move_messages(
+        self,
+        message_ids: Sequence[str],
+        source: str,
+        destination: str,
+    ) -> tuple[list[str], list[str]]:
+        def operation(client: IMAPClient) -> tuple[list[str], list[str]]:
+            client.select_folder(source)
+            updated: list[str] = []
+            missing: list[str] = []
+            for message_id in message_ids:
+                uids = client.search(["HEADER", "Message-ID", message_id])
+                if not uids:
+                    missing.append(message_id)
+                    continue
+                client.move([uids[-1]], destination)
+                updated.append(message_id)
+            return updated, missing
+
+        return self._run(operation)
+
+    def add_label(
+        self,
+        message_ids: Sequence[str],
+        folder: str,
+        label: str,
+    ) -> tuple[list[str], list[str]]:
+        def operation(client: IMAPClient) -> tuple[list[str], list[str]]:
+            updated: list[str] = []
+            missing: list[str] = []
+            for message_id in message_ids:
+                client.select_folder(label, readonly=True)
+                if client.search(["HEADER", "Message-ID", message_id]):
+                    updated.append(message_id)
+                    continue
+                client.select_folder(folder)
+                uids = client.search(["HEADER", "Message-ID", message_id])
+                if not uids:
+                    missing.append(message_id)
+                    continue
+                client.copy([uids[-1]], label)
+                updated.append(message_id)
+            return updated, missing
+
+        return self._run(operation)
+
+    def remove_label(
+        self,
+        message_ids: Sequence[str],
+        label: str,
+    ) -> tuple[list[str], list[str]]:
+        def operation(client: IMAPClient) -> tuple[list[str], list[str]]:
+            client.select_folder(label)
+            updated: list[str] = []
+            missing: list[str] = []
+            for message_id in message_ids:
+                uids = client.search(["HEADER", "Message-ID", message_id])
+                if not uids:
+                    missing.append(message_id)
+                    continue
+                client.add_flags(uids, [r"\Deleted"])
+                client.expunge(uids)
+                updated.append(message_id)
+            return updated, missing
+
+        return self._run(operation)
+
     @staticmethod
     def _fetch_body_guarded(
         client: IMAPClient, uid: int, missing_message: str

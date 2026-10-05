@@ -57,6 +57,14 @@ class DraftPreview(BaseModel):
     raw: str = ""
 
 
+class OrganizeResult(BaseModel):
+    action: str
+    folder: str = ""
+    destination: str = ""
+    updated: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+
+
 class DraftDeleted(BaseModel):
     uid: int
     message_id: str
