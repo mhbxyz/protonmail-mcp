@@ -94,6 +94,8 @@ IMAP IDLE and publishes resource-updated events for `mail://inbox` (clients subs
 `resources/subscribe`, or `subscriptions/listen` on newer protocol versions). Events
 carry no content; the `mail://inbox` resource itself exposes only counts and recent
 message identifiers. The watcher reconnects with exponential backoff and logs to stderr.
+Timeliness follows Bridge's own sync with Proton: local mailbox changes are noticed within
+about a second, while server-side arrivals can lag by tens of seconds or more.
 
 Results are structured (Pydantic models). Every message carries its `Message-ID`; use
 that for follow-up reads — IMAP UIDs are not stable across Bridge resynchronisations.
