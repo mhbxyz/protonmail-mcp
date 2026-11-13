@@ -14,7 +14,7 @@ from hashlib import sha256
 
 from .config import BridgeConfig
 from .confirmations import payload_digest
-from .parsing import extract_attachments, extract_body
+from .parsing import HEADER_PARSE_ERRORS, extract_attachments, extract_body, safe_header
 from .policy import SendPolicy
 from .state import SendState
 
@@ -73,7 +73,7 @@ def external_recipients(addresses: Sequence[str], account: str) -> list[str]:
 
 
 def _addresses(message: Message, field: str) -> tuple[str, ...]:
-    value = message.get(field)
+    value = safe_header(message, field)
     if not value:
         return ()
     return tuple(
@@ -108,14 +108,17 @@ def transmission_from_raw(raw: bytes) -> Transmission:
         warnings.append("Reply-To differs from From")
     if bcc:
         del message["Bcc"]
-    payload = message.as_bytes()
+    try:
+        payload = message.as_bytes()
+    except HEADER_PARSE_ERRORS as exc:
+        raise SendError("draft has a malformed header and cannot be sent") from exc
     return Transmission(
         payload=payload,
         envelope=envelope,
         to=to,
         cc=cc,
         bcc=bcc,
-        subject=str(message.get("Subject") or ""),
+        subject=str(safe_header(message, "Subject") or ""),
         body=extract_body(message),
         attachments=tuple(
             attachment.filename for attachment in extract_attachments(message)

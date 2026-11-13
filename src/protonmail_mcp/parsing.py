@@ -7,7 +7,7 @@ from email import message_from_bytes
 from email.header import decode_header
 from email.message import Message
 from email.policy import default as default_policy
-from email.utils import formataddr, getaddresses
+from email.utils import getaddresses
 from html.parser import HTMLParser
 from typing import Any
 
@@ -166,15 +166,38 @@ def strip_quoted(text: str) -> tuple[str, bool]:
     return "\n".join(kept).strip(), removed
 
 
+# CPython's structured header parser raises on some malformed headers (for example a
+# group inside an address list). Hostile mail must never make a message unreadable.
+HEADER_PARSE_ERRORS = (AttributeError, IndexError, TypeError, ValueError)
+
+
+def safe_header(message: Message, name: str) -> Any:
+    """Return the parsed header, or its raw value when the structured parser fails."""
+    try:
+        return message.get(name)
+    except HEADER_PARSE_ERRORS:
+        for key, value in message.raw_items():
+            if key.lower() == name.lower():
+                # Raw values keep undecodable bytes as surrogate escapes.
+                raw = str(value).encode("utf-8", "surrogateescape")
+                return raw.decode("utf-8", "replace")
+        return None
+
+
 def header_value(message: Message, name: str) -> str:
-    value = message.get(name)
+    value = safe_header(message, name)
     return str(value).strip() if value else ""
 
 
 def format_addresses(value: str | None) -> str:
     if not value:
         return ""
-    return ", ".join(formataddr(pair) for pair in getaddresses([value]) if pair[0] or pair[1])
+    formatted = (
+        _format_address(_decode_words(name) if name else "", address)
+        for name, address in getaddresses([value])
+        if name or address
+    )
+    return ", ".join(entry for entry in formatted if entry)
 
 
 def _decode_words(value: str) -> str:
@@ -203,7 +226,7 @@ def _format_address(display_name: str, addr_spec: str) -> str:
 
 
 def address_header(message: Message, name: str) -> str:
-    header = message.get(name)
+    header = safe_header(message, name)
     if header is None:
         return ""
     addresses = getattr(header, "addresses", None)
