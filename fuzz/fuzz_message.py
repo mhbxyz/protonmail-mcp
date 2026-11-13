@@ -13,7 +13,7 @@ with atheris.instrument_imports():
         header_message_id,
         thread_parent_ids,
     )
-    from protonmail_mcp.send import SendError, transmission_from_raw
+    from protonmail_mcp.send import SendError, emitted_header_names, transmission_from_raw
 
 
 def test_one_input(data: bytes) -> None:
@@ -29,7 +29,8 @@ def test_one_input(data: bytes) -> None:
         transmission = transmission_from_raw(data)
     except SendError:
         return
-    assert b"\nBcc:" not in transmission.payload
+    # No Bcc may reach the recipients, and no header may be injected by refolding.
+    assert b"bcc" not in emitted_header_names(transmission.payload)
 
 
 def main() -> None:

@@ -16,6 +16,7 @@ from protonmail_mcp.send import (
     SmtpSender,
     body_digest,
     denied_recipients,
+    emitted_header_names,
     external_recipients,
     guard_reasons,
     recipient_allowed,
@@ -280,3 +281,34 @@ def test_unserializable_header_fails_closed() -> None:
         assert "malformed header" in str(exc)
     else:
         assert b"\n\n" not in transmission.payload.split(b"\n\n", 1)[0]
+
+
+@pytest.mark.parametrize(
+    "bcc", ["Secret Boss <>", "undisclosed-list:;", "not an address", "boss@example.com"]
+)
+def test_bcc_header_is_always_stripped(bcc: str) -> None:
+    raw = f"To: friend@example.com\r\nBcc: {bcc}\r\nSubject: hi\r\n\r\nbody\r\n".encode()
+    transmission = transmission_from_raw(raw)
+    assert emitted_header_names(transmission.payload) == [b"to", b"subject"]
+
+
+# Found by fuzz/fuzz_message.py: refolding this To header emitted an unindented
+# "bcc:" line, i.e. an injected header in the SMTP payload.
+REFOLD_INJECTION = (
+    b"to:\x01,\xff,\x01\x01,\xff,t\x98\x01,,,,\xff,bcc:t:t,zt\"\"m)\xaf)=?<.o"
+)
+
+
+def test_header_injection_through_refolding_fails_closed() -> None:
+    try:
+        transmission = transmission_from_raw(REFOLD_INJECTION)
+    except SendError as exc:
+        assert "malformed header" in str(exc)
+    else:
+        assert emitted_header_names(transmission.payload) == [b"to"]
+
+
+def test_emitted_header_names_ignores_body_and_continuations() -> None:
+    assert emitted_header_names(b"\nbcc: in body\n") == []
+    payload = b"To: a@example.com,\n b@example.com\nSubject: x\n\nBcc: body\n"
+    assert emitted_header_names(payload) == [b"to", b"subject"]

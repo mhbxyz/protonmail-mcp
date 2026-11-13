@@ -95,6 +95,18 @@ class Transmission:
     warnings: tuple[str, ...]
 
 
+def emitted_header_names(payload: bytes) -> list[bytes]:
+    """Lower-cased names of the header fields a receiving server would see."""
+    if payload.startswith((b"\n", b"\r\n")):
+        return []
+    block = payload.replace(b"\r\n", b"\n").split(b"\n\n", 1)[0]
+    return [
+        line.split(b":", 1)[0].strip().lower()
+        for line in block.split(b"\n")
+        if line and line[:1] not in (b" ", b"\t")
+    ]
+
+
 def transmission_from_raw(raw: bytes) -> Transmission:
     message = message_from_bytes(raw, policy=default_policy)
     to = _addresses(message, "To")
@@ -106,12 +118,19 @@ def transmission_from_raw(raw: bytes) -> Transmission:
     sender = _addresses(message, "From")
     if reply_to and sender and set(reply_to) != set(sender):
         warnings.append("Reply-To differs from From")
-    if bcc:
-        del message["Bcc"]
+    # Always drop Bcc, even when it holds no parsable address: a display name alone
+    # must not reach the other recipients.
+    del message["Bcc"]
     try:
         payload = message.as_bytes()
     except HEADER_PARSE_ERRORS as exc:
         raise SendError("draft has a malformed header and cannot be sent") from exc
+    # Refolding a hostile header can emit an unindented continuation line, which the
+    # receiving server would read as an extra header (for example a new Bcc). Send
+    # only if the serialized headers are exactly the ones the message holds.
+    expected = [name.lower().encode("utf-8", "surrogateescape") for name in message.keys()]
+    if emitted_header_names(payload) != expected:
+        raise SendError("draft has a malformed header and cannot be sent")
     return Transmission(
         payload=payload,
         envelope=envelope,
