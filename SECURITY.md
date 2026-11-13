@@ -2,9 +2,17 @@
 
 ## Reporting a vulnerability
 
-Please use GitHub's private vulnerability reporting: **Security tab → Report a vulnerability**.
-Do not open a public issue for security problems. We aim to acknowledge reports within
-72 hours.
+Please use GitHub's private vulnerability reporting:
+<https://github.com/mhbxyz/protonmail-mcp/security/advisories/new>
+(**Security tab → Report a vulnerability**). Do not open a public issue for security
+problems.
+
+- **Acknowledgement:** within 72 hours.
+- **Assessment:** within 7 days, with a severity and a planned fix version.
+- **Fix and disclosure:** fixes ship as a patch release, followed by a published GitHub
+  Security Advisory (with a CVE when applicable) crediting the reporter unless they ask
+  otherwise. We ask reporters to keep details private until the fix is released, and in
+  any case for no more than 90 days.
 
 ## Supported versions
 
@@ -50,7 +58,8 @@ Every push and pull request must pass:
 |---|---|---|
 | Lint including security rules (bandit) | ruff (`S`) | blocking |
 | Static types, strict | mypy | blocking |
-| Adversarial, fuzz, capability-matrix tests | pytest + Hypothesis | blocking |
+| Adversarial, property-based, capability-matrix tests | pytest + Hypothesis | blocking |
+| Coverage-guided fuzzing of message, HTML and header parsing | Atheris (`fuzz/`) | blocking on PRs; 30 min weekly |
 | Coverage ≥ 88% on security-critical modules | pytest-cov | blocking |
 | Secret scanning (full history) | gitleaks | blocking |
 | Workflow hardening (SHA pinning, permissions) | zizmor | blocking |
@@ -59,7 +68,8 @@ Every push and pull request must pass:
 | Code scanning | CodeQL (python + actions) | blocking |
 | Dependency review on pull requests | dependency-review-action | blocking |
 | Repository posture | OpenSSF Scorecard | weekly |
-| Dependency freshness | Dependabot (7-day cooldown) | PR-based |
+| Dependency freshness (Python, Actions, Docker digests) | Dependabot (7-day cooldown) | PR-based |
+| Release integrity | Sigstore signatures + SLSA provenance on GitHub releases, PEP 740 attestations on PyPI | every release |
 
 Structural tests enforce conventions that are otherwise easy to erode:
 
