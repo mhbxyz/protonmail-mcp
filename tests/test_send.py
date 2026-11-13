@@ -250,3 +250,33 @@ def test_smtp_sender_wraps_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(smtplib, "SMTP", FailingSMTP)
     with pytest.raises(SendError, match="SMTP submission failed"):
         SmtpSender(make_config()).send(b"x", ["a@ext.test"])
+
+
+def test_malformed_address_header_fails_closed() -> None:
+    raw = (
+        b"From: me@proton.me\r\n"
+        b"To: friend@example.com\r\n"
+        b"Cc: ob88ibcc:;:\x0e\xbec\r\n"
+        b"Subject: hi\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+    # Depending on the Python version the header either serializes or is refused;
+    # it must never escape as an unexpected exception.
+    try:
+        transmission = transmission_from_raw(raw)
+    except SendError as exc:
+        assert "malformed header" in str(exc)
+    else:
+        assert "friend@example.com" in transmission.envelope
+        assert transmission.subject == "hi"
+
+
+def test_unserializable_header_fails_closed() -> None:
+    raw = b"to: \xff\t\t\xff\x90\x00:\xff:\xff\t\x11\x00\xff;\r\n\r\nbody\r\n"
+    try:
+        transmission = transmission_from_raw(raw)
+    except SendError as exc:
+        assert "malformed header" in str(exc)
+    else:
+        assert b"\n\n" not in transmission.payload.split(b"\n\n", 1)[0]

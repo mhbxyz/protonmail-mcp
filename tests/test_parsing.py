@@ -288,3 +288,33 @@ def test_structure_has_attachment() -> None:
     assert structure_has_attachment(ALTERNATIVE_STRUCTURE) is False
     assert structure_has_attachment(None) is False
     assert structure_has_attachment(b"garbage") is False
+
+
+# Found by fuzz/fuzz_message.py: CPython's address parser raises AttributeError on a
+# group inside an address list. A hostile sender must not make a message unreadable.
+MALFORMED_CC_EML = (
+    b"From: Alice <alice@example.com>\r\n"
+    b"To: bob@proton.me\r\n"
+    b"Cc: ob88ibcc:;:\x0e\xbec\r\n"
+    b"Subject: hostile\r\n"
+    b"Message-ID: <hostile@example.com>\r\n"
+    b"\r\n"
+    b"body\r\n"
+)
+
+
+def test_malformed_address_header_does_not_break_reading() -> None:
+    email = full_from_message(
+        MALFORMED_CC_EML, uid=1, folder="INBOX", flags=[], size=100, max_chars=1000
+    )
+    assert email.message_id == "<hostile@example.com>"
+    assert email.sender == "Alice <alice@example.com>"
+    assert email.recipients == "bob@proton.me"
+    assert "body" in email.body_text
+
+
+def test_malformed_address_header_with_raw_bytes_is_decoded() -> None:
+    raw = b"Cc: ::c,;m\xc6\r\nMessage-ID: <raw@example.com>\r\n\r\nbody\r\n"
+    email = full_from_message(raw, uid=1, folder="INBOX", flags=[], size=len(raw), max_chars=1000)
+    assert email.message_id == "<raw@example.com>"
+    assert "\udcc6" not in email.cc
