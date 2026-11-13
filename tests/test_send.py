@@ -261,5 +261,22 @@ def test_malformed_address_header_fails_closed() -> None:
         b"\r\n"
         b"body\r\n"
     )
-    with pytest.raises(SendError, match="malformed header"):
-        transmission_from_raw(raw)
+    # Depending on the Python version the header either serializes or is refused;
+    # it must never escape as an unexpected exception.
+    try:
+        transmission = transmission_from_raw(raw)
+    except SendError as exc:
+        assert "malformed header" in str(exc)
+    else:
+        assert "friend@example.com" in transmission.envelope
+        assert transmission.subject == "hi"
+
+
+def test_unserializable_header_fails_closed() -> None:
+    raw = b"to: \xff\t\t\xff\x90\x00:\xff:\xff\t\x11\x00\xff;\r\n\r\nbody\r\n"
+    try:
+        transmission = transmission_from_raw(raw)
+    except SendError as exc:
+        assert "malformed header" in str(exc)
+    else:
+        assert b"\n\n" not in transmission.payload.split(b"\n\n", 1)[0]

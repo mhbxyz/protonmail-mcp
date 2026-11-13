@@ -4,6 +4,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from email import message_from_bytes
+from email.errors import MessageError
 from email.header import decode_header
 from email.message import Message
 from email.policy import default as default_policy
@@ -168,7 +169,7 @@ def strip_quoted(text: str) -> tuple[str, bool]:
 
 # CPython's structured header parser raises on some malformed headers (for example a
 # group inside an address list). Hostile mail must never make a message unreadable.
-HEADER_PARSE_ERRORS = (AttributeError, IndexError, TypeError, ValueError)
+HEADER_PARSE_ERRORS = (AttributeError, IndexError, TypeError, ValueError, MessageError)
 
 
 def safe_header(message: Message, name: str) -> Any:
