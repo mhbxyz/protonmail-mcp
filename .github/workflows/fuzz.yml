@@ -1,0 +1,45 @@
+name: Fuzz
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_message, fuzz_html, fuzz_headers]
+    env:
+      # Short runs on every change, a longer campaign on the weekly schedule.
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '1800' || '120' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.13"
+      - run: uv sync --locked --group fuzz
+      - name: Run ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p crashes
+          uv run python "fuzz/${TARGET}.py" \
+            -max_total_time="${FUZZ_SECONDS}" \
+            -rss_limit_mb=2048 \
+            -artifact_prefix=crashes/
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crashes-${{ matrix.target }}
+          path: crashes/
