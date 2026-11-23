@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -513,11 +513,11 @@ wheels = [
 
 [[package]]
 name = "imapclient"
-version = "4.1.0"
+version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8d/f7/4e2d2e93313d7d7542a8378200ea931ff4e29b730d9eb5a9d8debafcbc68/imapclient-4.1.0.tar.gz", hash = "sha256:b7cefa7c9bf3ec029c007dfade191480b82eb3816fc20ab23ef48e7aec841a7f", size = 71344, upload-time = "2026-09-18T11:21:57.568Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/5d/16a67e0e40549d544b87bed63399906195bcfe5664b5a5384c13ad1ce64e/imapclient-4.2.0.tar.gz", hash = "sha256:777102ced48ab22e3fc372982bb5bed1497c4cc438864d6ec1c9f327ab5f3b3a", size = 72489, upload-time = "2026-11-14T22:43:37.161Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/52/49/12fe5860e37f2e915ecbcc6c743bc71c84c6d0f4c9002f3c5a66f79b172d/imapclient-4.1.0-py3-none-any.whl", hash = "sha256:5fd62ab2a099494ed2a5a21e7bda03c1e99e3d55bdedb4e9c12c8176873a8fe4", size = 56039, upload-time = "2026-09-18T11:21:56.499Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/fc/930798e5519b49102c1407017b9edb65dcd59a1b293a49099eba2ed9a062/imapclient-4.2.0-py3-none-any.whl", hash = "sha256:329593a186e55e0601766dd0c8fc7e2edc0be76bd95479c84bd624624c4dcec5", size = 56453, upload-time = "2026-11-14T22:43:36.2Z" },
 ]
 
 [[package]]
