@@ -25,6 +25,13 @@ across Bridge resynchronisations.
 Mailboxes are opened with IMAP `SELECT ... READONLY`: reading never changes anything, not
 even the `\Seen` flag.
 
+Listing and searching order matching messages by IMAP `INTERNALDATE` (newest first,
+then descending UID for equal times), independently of the sender's Date header.
+Each request fetches dates for all matches in batches before applying its limit or
+attachment scan cap; large mailboxes may therefore incur substantial metadata traffic.
+Headers are fetched only for selected messages. Pagination is not a snapshot: mailbox
+changes between requests can change results, and a missing cursor requires a restart.
+
 ## Draft
 
 | Tool | Description |

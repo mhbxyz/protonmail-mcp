@@ -147,7 +147,7 @@ class BridgeClient:
     ) -> SearchResult:
         def operation(client: IMAPClient) -> SearchResult:
             client.select_folder(folder, readonly=True)
-            uids = client.search(criteria)
+            uids = self._ordered_uids(client, client.search(criteria))
             truncated = len(uids) > ATTACHMENT_SCAN_LIMIT
             candidates = uids[:ATTACHMENT_SCAN_LIMIT]
             if not candidates:
@@ -579,8 +579,23 @@ class BridgeClient:
         limit: int,
     ) -> list[EmailSummary]:
         client.select_folder(folder, readonly=True)
-        uids = client.search(criteria)
+        uids = self._ordered_uids(client, client.search(criteria))
         return self._summaries_for(client, uids[:limit], folder)
+
+    @staticmethod
+    def _ordered_uids(client: IMAPClient, uids: Sequence[int]) -> list[int]:
+        # Global order requires every matching date, but not every header or body.
+        dates: dict[int, datetime] = {}
+        for offset in range(0, len(uids), 500):
+            batch = uids[offset : offset + 500]
+            response = client.fetch(batch, ["INTERNALDATE"])
+            for uid in batch:
+                value = (response.get(uid) or {}).get(b"INTERNALDATE")
+                if not isinstance(value, datetime):
+                    raise MailboxError(f"missing INTERNALDATE for UID {uid}; retry the request")
+                # IMAPClient's default naive values represent local time.
+                dates[uid] = value.astimezone(UTC)
+        return sorted(uids, key=lambda uid: (dates[uid], uid), reverse=True)
 
     def _fetch_page(
         self,
@@ -602,6 +617,8 @@ class BridgeClient:
                     raise MailboxError(
                         "pagination cursor is no longer valid; restart from the first page"
                     )
+            uids = self._ordered_uids(client, uids)
+            if before is not None:
                 start = uids.index(before_uid) + 1
             selected = uids[start : start + limit]
             has_more = bool(uids[start + limit :])
@@ -637,7 +654,6 @@ class BridgeClient:
                     received=_internaldate(item),
                 )
             )
-        summaries.sort(key=lambda summary: summary.received, reverse=True)
         return summaries
 
     @staticmethod
@@ -666,6 +682,7 @@ class BridgeClient:
                 timeout=self.config.timeout,
             )
             client.starttls(ssl_context=context)
+        client.normalise_times = False
         client.login(self.config.username, self.config.password)
         return client
 
