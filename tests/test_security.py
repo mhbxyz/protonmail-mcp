@@ -173,11 +173,14 @@ class SearchRecorder:
         return [1]
 
     def fetch(self, uids: list[int], data: list[str]) -> dict[int, dict[bytes, Any]]:
+        from datetime import datetime
+
         return {
             1: {
                 b"FLAGS": (),
                 b"RFC822.SIZE": len(HEADER),
                 b"RFC822.HEADER": HEADER,
+                b"INTERNALDATE": datetime(2026, 1, 1),
                 b"BODY[]": HEADER + b"body\n",
             }
         }

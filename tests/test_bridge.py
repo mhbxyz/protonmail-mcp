@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from email import message_from_bytes
 from email.policy import default as default_policy
 from typing import Any
@@ -138,6 +138,7 @@ def test_list_emails_uses_readonly_and_newest_first() -> None:
                 b"RFC822.HEADER": HEADER,
                 b"INTERNALDATE": datetime(2026, 10, 4, 9, 0),
             },
+            3: {b"INTERNALDATE": datetime(2026, 10, 3, 9, 0)},
         },
     )
     client = attach(BridgeClient(make_config()), fake)
@@ -162,6 +163,49 @@ def test_list_emails_sorts_by_receive_date() -> None:
     )
     emails = attach(BridgeClient(make_config()), fake).list_emails(limit=2).messages
     assert [email.uid for email in emails] == [2, 1]
+
+
+def test_list_orders_all_matches_before_pagination() -> None:
+    fake = FakeIMAPClient(
+        search_results=[4, 1, 3, 2],
+        fetch_results={
+            uid: {b"RFC822.HEADER": HEADER, b"INTERNALDATE": datetime(2026, month, 1)}
+            for uid, month in [(1, 11), (2, 9), (3, 11), (4, 10)]
+        },
+    )
+    client = attach(BridgeClient(make_config()), fake)
+    first = client.list_emails(limit=2)
+    assert [message.uid for message in first.messages] == [3, 1]
+    assert first.next_cursor == "1"
+    second = client.list_emails(limit=2, before=first.next_cursor)
+    assert [message.uid for message in second.messages] == [4, 2]
+    assert second.next_cursor is None
+
+
+def test_search_orders_instants_before_limit_and_preserves_readonly() -> None:
+    class RecordingFake(FakeIMAPClient):
+        calls: list[list[str]] = []
+
+        def fetch(self, uids: list[int], data: list[str]) -> dict[int, dict[bytes, Any]]:
+            self.calls.append(data)
+            return super().fetch(uids, data)
+
+    fake = RecordingFake(search_results=[2, 1, 3], fetch_results={
+        1: {b"RFC822.HEADER": HEADER, b"INTERNALDATE": datetime(2026, 1, 1, 10, tzinfo=UTC)},
+        2: {b"RFC822.HEADER": HEADER, b"INTERNALDATE": datetime(2026, 1, 1, 11, tzinfo=timezone(timedelta(hours=2)))},
+        3: {b"RFC822.HEADER": HEADER, b"INTERNALDATE": datetime(2026, 1, 1, 12, tzinfo=UTC)},
+    })
+    client = attach(BridgeClient(make_config()), fake)
+    assert [m.uid for m in client.search_emails(limit=2, since_days=7).messages] == [3, 1]
+    assert fake.selected == ("INBOX", True)
+    assert fake.calls[0] == ["INTERNALDATE"]
+    assert all("BODY[]" not in call and "BODY.PEEK[]" not in call for call in fake.calls)
+
+
+def test_missing_ordering_date_fails_explicitly() -> None:
+    client = attach(BridgeClient(make_config()), FakeIMAPClient(search_results=[1]))
+    with pytest.raises(MailboxError, match="missing INTERNALDATE"):
+        client.list_emails()
 
 
 def test_list_criteria() -> None:
@@ -311,7 +355,8 @@ def test_list_drafts_uses_drafts_folder() -> None:
         folders=DRAFTS_FOLDERS,
         search_results=[1],
         fetch_results={
-            1: {b"FLAGS": (b"\\Draft",), b"RFC822.SIZE": 10, b"RFC822.HEADER": HEADER}
+            1: {b"FLAGS": (b"\\Draft",), b"RFC822.SIZE": 10, b"RFC822.HEADER": HEADER,
+                b"INTERNALDATE": datetime(2026, 1, 1)}
         },
     )
     client = attach(BridgeClient(make_config()), fake)
@@ -539,12 +584,14 @@ def test_search_emails_with_attachment_filter() -> None:
         fetch_results={
             1: {
                 b"BODYSTRUCTURE": MIXED_STRUCTURE,
+                b"INTERNALDATE": datetime(2026, 1, 1),
                 b"FLAGS": (),
                 b"RFC822.SIZE": 10,
                 b"RFC822.HEADER": HEADER,
             },
             2: {
                 b"BODYSTRUCTURE": TEXT_PLAIN_STRUCTURE,
+                b"INTERNALDATE": datetime(2026, 1, 1),
                 b"FLAGS": (),
                 b"RFC822.SIZE": 10,
                 b"RFC822.HEADER": HEADER,
@@ -561,7 +608,8 @@ def test_search_emails_with_attachment_filter() -> None:
 def test_search_emails_without_attachment_filter_does_not_scan() -> None:
     fake = FakeIMAPClient(
         search_results=[1],
-        fetch_results={1: {b"FLAGS": (), b"RFC822.SIZE": 5, b"RFC822.HEADER": HEADER}},
+        fetch_results={1: {b"FLAGS": (), b"RFC822.SIZE": 5, b"RFC822.HEADER": HEADER,
+                           b"INTERNALDATE": datetime(2026, 1, 1)}},
     )
     client = attach(BridgeClient(make_config()), fake)
     result = client.search_emails("facture")
@@ -579,12 +627,14 @@ def test_search_emails_attachment_cap(monkeypatch: pytest.MonkeyPatch) -> None:
         fetch_results={
             1: {
                 b"BODYSTRUCTURE": MIXED_STRUCTURE,
+                b"INTERNALDATE": datetime(2026, 1, 1),
                 b"FLAGS": (),
                 b"RFC822.SIZE": 10,
                 b"RFC822.HEADER": HEADER,
             },
             2: {
                 b"BODYSTRUCTURE": MIXED_STRUCTURE,
+                b"INTERNALDATE": datetime(2026, 1, 1),
                 b"FLAGS": (),
                 b"RFC822.SIZE": 10,
                 b"RFC822.HEADER": HEADER,
@@ -595,7 +645,7 @@ def test_search_emails_attachment_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     result = client.search_emails("facture", has_attachment=True)
     assert result.scanned == 1
     assert result.truncated is True
-    assert [message.uid for message in result.messages] == [1]
+    assert [message.uid for message in result.messages] == [2]
 
 
 def test_get_raw_returns_full_message() -> None:
